@@ -64,6 +64,17 @@ try:
 except ImportError:
     MetricsDatabase = None
     JSONToSQLiteMigrator = None
+
+# Import scheduling system
+try:
+    from scheduler import (
+        ScheduleConfig, ScheduleType, TriggerType, ResourceThresholds,
+        CronExpressionValidator, SchedulingEngine
+    )
+except ImportError:
+    ScheduleConfig = None
+    SchedulingEngine = None
+    logging.warning("Scheduling system not available - scheduling features disabled")
     logging.warning("SQLite metrics storage not available - falling back to JSON")
 
 # ---------- Utilities ----------
@@ -1555,6 +1566,21 @@ def main():
     p.add_argument("--backup-database", help="Create database backup at specified path")
     p.add_argument("--verify-database", action="store_true", help="Verify database integrity and exit")
     p.add_argument("--repair-database", action="store_true", help="Attempt to repair database issues and exit")
+    
+    # Advanced scheduling options
+    p.add_argument("--schedule", help="Create a new schedule with given name")
+    p.add_argument("--cron", help="Cron expression for schedule (e.g., '0 2 * * *' for 2 AM daily)")
+    p.add_argument("--daily", type=int, metavar="HOUR", help="Schedule daily at specified hour (0-23)")
+    p.add_argument("--weekly", type=int, nargs=2, metavar=("DAY", "HOUR"), help="Schedule weekly on day (0-6, 0=Sunday) at hour")
+    p.add_argument("--monthly", type=int, nargs=2, metavar=("DAY", "HOUR"), help="Schedule monthly on day (1-31) at hour")
+    p.add_argument("--schedule-id", help="Schedule ID for scheduled operations (internal use)")
+    p.add_argument("--max-runtime", type=int, default=6, help="Maximum runtime in hours for scheduled operations")
+    p.add_argument("--list-schedules", action="store_true", help="List all configured schedules and exit")
+    p.add_argument("--remove-schedule", help="Remove schedule by ID and exit")
+    p.add_argument("--enable-schedule", help="Enable schedule by ID and exit")
+    p.add_argument("--disable-schedule", help="Disable schedule by ID and exit")
+    p.add_argument("--sync-schedules", action="store_true", help="Synchronize schedules with cron and exit")
+    p.add_argument("--test-schedule", help="Test schedule configuration by ID and exit")
 
     args = p.parse_args()
     
@@ -1796,6 +1822,181 @@ def main():
         else:
             print("Database repair failed")
             print(f"Original database backed up to: {backup_path}")
+            return 1
+    
+    # Initialize scheduling engine if available
+    scheduling_engine = None
+    if SchedulingEngine:
+        try:
+            script_path = Path(__file__).absolute()
+            scheduling_engine = SchedulingEngine(script_path)
+        except Exception as e:
+            logging.warning(f"Failed to initialize scheduling engine: {e}")
+    
+    # Handle schedule management commands
+    if args.list_schedules:
+        if not scheduling_engine:
+            print("Scheduling system not available")
+            return 1
+        
+        schedules = scheduling_engine.schedule_manager.list_schedules()
+        if not schedules:
+            print("No schedules configured")
+            return 0
+        
+        print("CONFIGURED SCHEDULES:")
+        print("=" * 60)
+        for schedule in schedules:
+            status = "ENABLED" if schedule.enabled else "DISABLED"
+            print(f"ID: {schedule.schedule_id}")
+            print(f"Name: {schedule.name}")
+            print(f"Status: {status}")
+            print(f"Cron: {schedule.cron_expression}")
+            print(f"Target: {schedule.target_percent}%")
+            print(f"Created: {datetime.fromtimestamp(schedule.created_at).strftime('%Y-%m-%d %H:%M')}")
+            if schedule.description:
+                print(f"Description: {schedule.description}")
+            print("-" * 40)
+        return 0
+    
+    if args.remove_schedule:
+        if not scheduling_engine:
+            print("Scheduling system not available")
+            return 1
+        
+        if scheduling_engine.delete_schedule(args.remove_schedule):
+            print(f"Schedule '{args.remove_schedule}' removed successfully")
+            return 0
+        else:
+            print(f"Failed to remove schedule '{args.remove_schedule}'")
+            return 1
+    
+    if args.enable_schedule:
+        if not scheduling_engine:
+            print("Scheduling system not available")
+            return 1
+        
+        if scheduling_engine.enable_schedule(args.enable_schedule):
+            print(f"Schedule '{args.enable_schedule}' enabled successfully")
+            return 0
+        else:
+            print(f"Failed to enable schedule '{args.enable_schedule}'")
+            return 1
+    
+    if args.disable_schedule:
+        if not scheduling_engine:
+            print("Scheduling system not available")
+            return 1
+        
+        if scheduling_engine.disable_schedule(args.disable_schedule):
+            print(f"Schedule '{args.disable_schedule}' disabled successfully")
+            return 0
+        else:
+            print(f"Failed to disable schedule '{args.disable_schedule}'")
+            return 1
+    
+    if args.sync_schedules:
+        if not scheduling_engine:
+            print("Scheduling system not available")
+            return 1
+        
+        if scheduling_engine.sync_schedules():
+            print("Schedules synchronized with cron successfully")
+            return 0
+        else:
+            print("Failed to synchronize schedules")
+            return 1
+    
+    if args.test_schedule:
+        if not scheduling_engine:
+            print("Scheduling system not available")
+            return 1
+        
+        schedule = scheduling_engine.schedule_manager.get_schedule(args.test_schedule)
+        if not schedule:
+            print(f"Schedule '{args.test_schedule}' not found")
+            return 1
+        
+        print(f"TESTING SCHEDULE: {schedule.name}")
+        print("=" * 50)
+        
+        # Test cron expression
+        if schedule.cron_expression:
+            is_valid = CronExpressionValidator.validate_cron_expression(schedule.cron_expression)
+            print(f"Cron Expression: {schedule.cron_expression} ({'VALID' if is_valid else 'INVALID'})")
+        else:
+            print("Cron Expression: Not specified")
+        
+        # Show generated command
+        if schedule.cron_expression:
+            cron_manager = scheduling_engine.cron_manager
+            command = cron_manager._generate_cron_command(schedule)
+            print(f"Generated Command: {command}")
+        
+        print(f"Status: {'ENABLED' if schedule.enabled else 'DISABLED'}")
+        print(f"Max Runtime: {schedule.max_runtime_hours} hours")
+        
+        return 0
+    
+    # Handle schedule creation
+    if args.schedule:
+        if not scheduling_engine:
+            print("Scheduling system not available")
+            return 1
+        
+        # Generate schedule ID from name
+        schedule_id = re.sub(r'[^a-zA-Z0-9_-]', '_', args.schedule.lower())
+        
+        # Determine cron expression
+        cron_expression = ""
+        if args.cron:
+            cron_expression = args.cron
+        elif args.daily is not None:
+            if not (0 <= args.daily <= 23):
+                print("Daily hour must be between 0-23")
+                return 1
+            cron_expression = CronExpressionValidator.create_daily_expression(args.daily)
+        elif args.weekly:
+            day, hour = args.weekly
+            if not (0 <= day <= 6 and 0 <= hour <= 23):
+                print("Weekly day must be 0-6 (0=Sunday) and hour 0-23")
+                return 1
+            cron_expression = CronExpressionValidator.create_weekly_expression(day, hour)
+        elif args.monthly:
+            day, hour = args.monthly
+            if not (1 <= day <= 31 and 0 <= hour <= 23):
+                print("Monthly day must be 1-31 and hour 0-23")
+                return 1
+            cron_expression = CronExpressionValidator.create_monthly_expression(day, hour)
+        else:
+            print("No schedule timing specified. Use --cron, --daily, --weekly, or --monthly")
+            return 1
+        
+        # Create schedule configuration
+        schedule_config = ScheduleConfig(
+            schedule_id=schedule_id,
+            name=args.schedule,
+            cron_expression=cron_expression,
+            target_percent=args.target_percent,
+            headroom_percent=args.headroom_percent,
+            min_unit_size=args.min_unit_size,
+            rsync_mode=args.rsync_mode,
+            max_runtime_hours=args.max_runtime,
+            include_disks=args.include_disks.split(",") if args.include_disks else [],
+            exclude_disks=args.exclude_disks.split(",") if args.exclude_disks else [],
+            include_shares=args.include_shares.split(",") if args.include_shares else [],
+            exclude_shares=args.exclude_shares.split(",") if args.exclude_shares else [],
+            exclude_globs=[g.strip() for g in args.exclude_globs.split(",") if g.strip()] if args.exclude_globs else []
+        )
+        
+        if scheduling_engine.create_and_install_schedule(schedule_config):
+            print(f"Schedule '{args.schedule}' created successfully")
+            print(f"Schedule ID: {schedule_id}")
+            print(f"Cron Expression: {cron_expression}")
+            print(f"Status: {'ENABLED' if schedule_config.enabled else 'DISABLED'}")
+            return 0
+        else:
+            print(f"Failed to create schedule '{args.schedule}'")
             return 1
     
     # Handle metrics-only commands that don't require disk scanning
