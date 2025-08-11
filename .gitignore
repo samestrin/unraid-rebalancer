@@ -184,5 +184,8 @@ Desktop.ini
 *.swo
 *~
 
+# AI Pair Programmer
 planning/
 .trae/
+.claude/
+CLAUDE.md

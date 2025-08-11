@@ -14,7 +14,10 @@ An intelligent disk rebalancing tool for Unraid servers that redistributes data 
 - **Plan Management**: Save and load redistribution plans as JSON files
 - **Comprehensive Filtering**: Include/exclude specific disks, shares, and file patterns
 - **Progress Tracking**: Real-time progress reporting during operations
+- **Performance Metrics**: Comprehensive transfer speed, CPU, and disk I/O monitoring
+- **Historical Analysis**: Track performance trends and generate recommendations
 - **Configurable Performance**: Multiple rsync modes optimized for different CPU capabilities
+- **Advanced Reporting**: Generate detailed reports with ASCII charts and export options
 - **Logging**: Configurable logging with file output support
 
 ## Key Benefits
@@ -39,6 +42,9 @@ An intelligent disk rebalancing tool for Unraid servers that redistributes data 
 # Clone the repository
 git clone https://github.com/samestrin/unraid-rebalancer.git
 cd unraid-rebalancer
+
+# Install dependencies (for performance monitoring)
+pip3 install -r requirements.txt
 
 # Make executable
 chmod +x unraid_rebalancer.py
@@ -82,12 +88,25 @@ sudo ./unraid_rebalancer.py --target-percent 80 --rsync-mode integrity --execute
 # List available rsync modes
 sudo ./unraid_rebalancer.py --list-rsync-modes
 
+# Enable performance metrics and progress tracking
+sudo ./unraid_rebalancer.py --target-percent 80 --execute \
+  --metrics --show-progress --metrics-file rebalance_metrics.json
+
 # Limit bandwidth and enable verbose logging
 sudo ./unraid_rebalancer.py --target-percent 80 --execute \
   --rsync-extra "--bwlimit=50M" --verbose --log-file rebalance.log
 
 # Work with specific disks only
 sudo ./unraid_rebalancer.py --include-disks disk1,disk2,disk3 --target-percent 75 --execute
+
+# View historical performance data
+sudo ./unraid_rebalancer.py --show-history
+
+# Compare recent operations and get recommendations
+sudo ./unraid_rebalancer.py --compare-runs
+
+# Export metrics to CSV for analysis
+sudo ./unraid_rebalancer.py --export-metrics metrics_20231201_120000.json
 ```
 
 ## Command Line Options
@@ -112,6 +131,17 @@ sudo ./unraid_rebalancer.py --include-disks disk1,disk2,disk3 --target-percent 7
 | `--allow-merge` | Allow merging into existing directories | False |
 | `--verbose`, `-v` | Enable verbose logging | False |
 | `--log-file` | Write logs to file | stderr only |
+| **Performance Metrics** | | |
+| `--metrics` | Enable detailed performance metrics collection | False |
+| `--metrics-file` | Save performance metrics to JSON file | Auto-generated |
+| `--metrics-dir` | Directory for metrics files | ./metrics |
+| `--show-progress` | Show real-time progress during transfers | False |
+| `--report-format` | Report format (text/json/csv) | text |
+| `--show-history` | Display historical performance data | - |
+| `--compare-runs` | Compare recent operations and show recommendations | - |
+| `--metrics-summary` | Show quick performance summary | - |
+| `--export-metrics` | Export metrics from file to CSV | - |
+| `--sample-interval` | System monitoring sample interval (seconds) | 5.0 |
 
 ## How It Works
 
@@ -149,6 +179,61 @@ The tool offers three rsync performance modes to optimize transfers based on you
   - Trade-offs: Higher CPU usage, progress reporting overhead
 
 Use `--list-rsync-modes` to see detailed information about each mode.
+
+## Performance Metrics & Monitoring
+
+The Unraid Rebalancer includes comprehensive performance monitoring and reporting capabilities to help you optimize your rebalancing operations and track system performance over time.
+
+### Real-Time Monitoring
+
+When enabled with `--metrics` or `--show-progress`, the tool provides:
+
+- **Transfer Speeds**: Real-time MB/s rates for each file transfer
+- **Progress Tracking**: Completion percentage and estimated time remaining
+- **System Resources**: CPU usage, memory consumption, and disk I/O rates
+- **Performance Alerts**: Warnings for slow transfers or high resource usage
+
+### Historical Analysis
+
+Track performance trends over time:
+
+```bash
+# View all historical operations
+sudo ./unraid_rebalancer.py --show-history
+
+# Compare recent operations and get optimization recommendations
+sudo ./unraid_rebalancer.py --compare-runs
+
+# View detailed summary of latest operation
+sudo ./unraid_rebalancer.py --metrics-summary
+```
+
+### Report Generation
+
+Generate comprehensive reports in multiple formats:
+
+- **Text Reports**: Human-readable summaries with performance statistics
+- **JSON Export**: Machine-readable data for integration with other tools
+- **CSV Export**: Spreadsheet-compatible format for detailed analysis
+- **ASCII Charts**: Visual performance graphs displayed in terminal
+
+### Performance Recommendations
+
+The tool automatically analyzes your historical data and provides actionable recommendations:
+
+- Optimal rsync mode selection based on your system's performance
+- Identification of performance bottlenecks and slowdowns
+- Suggestions for improving transfer efficiency
+- Alerts about recurring transfer failures
+
+### Metrics Data Structure
+
+Collected metrics include:
+
+- **Operation-level**: Duration, total files, success rates, overall transfer rates
+- **Transfer-level**: Individual file transfer times, speeds, and error details
+- **System-level**: CPU, memory, disk I/O, and network usage over time
+- **Error tracking**: Detailed failure logs and error categorization
 
 ## Safety Features
 
