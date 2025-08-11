@@ -1,0 +1,13 @@
+# Unraid Rebalancer Requirements
+# This tool uses only Python standard library modules
+# No external dependencies required
+
+# Python 3.8+ is required for:
+# - dataclasses (Python 3.7+)
+# - typing annotations (Python 3.5+)
+# - pathlib improvements (Python 3.6+)
+# - f-string support (Python 3.6+)
+
+# System requirements:
+# - rsync (typically pre-installed on Unraid)
+# - Root access for disk operations
