@@ -183,3 +183,6 @@ Desktop.ini
 *.swp
 *.swo
 *~
+
+planning/
+.trae/

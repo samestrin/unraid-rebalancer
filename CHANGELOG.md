@@ -5,7 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.0.1] - 2025-07-25
+## [0.0.2] - 2025-07-11
+
+### Added
+- **Configurable Rsync Performance Modes**: Three performance modes optimized for different CPU capabilities
+  - `fast` mode: Minimal CPU overhead with basic features (default)
+  - `balanced` mode: Moderate features with extended attributes
+  - `integrity` mode: Full integrity checking with all features
+- New command-line options:
+  - `--rsync-mode {fast,balanced,integrity}`: Select rsync performance mode
+  - `--list-rsync-modes`: Display available modes with descriptions and flags
+- Enhanced user feedback showing selected rsync mode during execution
+- Detailed documentation for each performance mode in README
+
+### Changed
+- Default rsync behavior now uses `fast` mode for better performance on lower-end systems
+- Improved command-line help with detailed rsync mode descriptions
+- Enhanced README with comprehensive rsync performance mode documentation
+
+### Technical Details
+- Added `RSYNC_MODES` configuration dictionary for mode management
+- Implemented `get_rsync_flags()` function for mode validation
+- Updated `perform_plan()` function to accept rsync_mode parameter
+- Maintained backward compatibility with existing rsync-extra options
+
+---
+
+## [0.0.1] - 2025-07-11
 
 ### Added
 - Initial release of Unraid Rebalancer
@@ -73,6 +99,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Version History
 
+- **0.0.2** - Added configurable rsync performance modes
 - **0.0.1** - Initial release with core functionality
 
 ---

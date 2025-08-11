@@ -1,6 +1,6 @@
 # Unraid Rebalancer
 
-![Version 0.0.1](https://img.shields.io/badge/Version-0.0.1-blue) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) [![Built with Python](https://img.shields.io/badge/Built%20with-Python-green)](https://www.python.org/)
+![Version 0.0.2](https://img.shields.io/badge/Version-0.0.2-blue) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) [![Built with Python](https://img.shields.io/badge/Built%20with-Python-green)](https://www.python.org/)
 
 An intelligent disk rebalancing tool for Unraid servers that redistributes data across drives to optimize storage utilization and balance fill levels.
 
@@ -14,6 +14,7 @@ An intelligent disk rebalancing tool for Unraid servers that redistributes data 
 - **Plan Management**: Save and load redistribution plans as JSON files
 - **Comprehensive Filtering**: Include/exclude specific disks, shares, and file patterns
 - **Progress Tracking**: Real-time progress reporting during operations
+- **Configurable Performance**: Multiple rsync modes optimized for different CPU capabilities
 - **Logging**: Configurable logging with file output support
 
 ## Key Benefits
@@ -73,6 +74,14 @@ sudo ./unraid_rebalancer.py --target-percent 80 --save-plan rebalance_plan.json
 # Load and execute saved plan
 sudo ./unraid_rebalancer.py --load-plan rebalance_plan.json --execute
 
+# Use different rsync performance modes
+sudo ./unraid_rebalancer.py --target-percent 80 --rsync-mode fast --execute      # Minimal CPU
+sudo ./unraid_rebalancer.py --target-percent 80 --rsync-mode balanced --execute  # Moderate features
+sudo ./unraid_rebalancer.py --target-percent 80 --rsync-mode integrity --execute # Full features
+
+# List available rsync modes
+sudo ./unraid_rebalancer.py --list-rsync-modes
+
 # Limit bandwidth and enable verbose logging
 sudo ./unraid_rebalancer.py --target-percent 80 --execute \
   --rsync-extra "--bwlimit=50M" --verbose --log-file rebalance.log
@@ -98,6 +107,8 @@ sudo ./unraid_rebalancer.py --include-disks disk1,disk2,disk3 --target-percent 7
 | `--save-plan` | Save redistribution plan to JSON file | None |
 | `--load-plan` | Load plan from JSON file | None |
 | `--rsync-extra` | Additional rsync options | None |
+| `--rsync-mode` | Rsync performance mode (fast/balanced/integrity) | fast |
+| `--list-rsync-modes` | List available rsync modes and exit | - |
 | `--allow-merge` | Allow merging into existing directories | False |
 | `--verbose`, `-v` | Enable verbose logging | False |
 | `--log-file` | Write logs to file | stderr only |
@@ -117,6 +128,27 @@ The tool works with "allocation units" - directories or files that are moved as 
 - **Depth 0**: Entire share content on a disk
 - **Depth 1**: Direct children of share root (default)
 - **Depth 2+**: Deeper directory levels
+
+### Rsync Performance Modes
+
+The tool offers three rsync performance modes to optimize transfers based on your CPU capabilities:
+
+- **fast** (default): Minimal CPU overhead with basic features
+  - Flags: `-av --partial --inplace --numeric-ids --no-compress`
+  - Best for: Lower-end CPUs, maximum transfer speed
+  - Trade-offs: No hard link preservation, no extended attributes
+
+- **balanced**: Moderate features with extended attributes
+  - Flags: `-avPR -X --partial --inplace --numeric-ids`
+  - Best for: Mid-range CPUs, balanced performance
+  - Trade-offs: Some CPU overhead for extended attribute preservation
+
+- **integrity**: Full integrity checking with all features
+  - Flags: `-aHAX --info=progress2 --partial --inplace --numeric-ids`
+  - Best for: High-end CPUs, maximum data integrity
+  - Trade-offs: Higher CPU usage, progress reporting overhead
+
+Use `--list-rsync-modes` to see detailed information about each mode.
 
 ## Safety Features
 

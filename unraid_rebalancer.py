@@ -67,6 +67,22 @@ SIZE_UNITS = {
     "TiB": 1024**4,
 }
 
+# Rsync performance modes for different CPU capabilities
+RSYNC_MODES = {
+    "fast": {
+        "flags": ["-av", "--partial", "--inplace", "--numeric-ids", "--no-compress"],
+        "description": "Fastest transfers, minimal CPU overhead (recommended for lower-end CPUs)"
+    },
+    "balanced": {
+        "flags": ["-avPR", "-X", "--partial", "--inplace", "--numeric-ids"],
+        "description": "Balanced speed and features with extended attributes (good for mid-range CPUs)"
+    },
+    "integrity": {
+        "flags": ["-aHAX", "--info=progress2", "--partial", "--inplace", "--numeric-ids"],
+        "description": "Full integrity checking with hard links, ACLs, and progress (for high-end CPUs)"
+    }
+}
+
 def parse_size(s: str) -> int:
     m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*([KMGT]?i?B)\s*", s, re.I)
     if not m:
@@ -358,7 +374,14 @@ def build_plan(disks: List[Disk], units: List[Unit], target_percent: Optional[fl
 
 # ---------- Execution ----------
 
-def perform_plan(plan: Plan, execute: bool, rsync_extra: List[str], allow_merge: bool) -> int:
+def get_rsync_flags(mode: str) -> List[str]:
+    """Get rsync flags for the specified performance mode."""
+    if mode not in RSYNC_MODES:
+        raise ValueError(f"Unknown rsync mode '{mode}'. Available modes: {', '.join(RSYNC_MODES.keys())}")
+    return RSYNC_MODES[mode]["flags"].copy()
+
+
+def perform_plan(plan: Plan, execute: bool, rsync_extra: List[str], allow_merge: bool, rsync_mode: str = "fast") -> int:
     failures = 0
     for idx, m in enumerate(plan.moves, 1):
         src = m.unit.src_abs()
@@ -381,14 +404,8 @@ def perform_plan(plan: Plan, execute: bool, rsync_extra: List[str], allow_merge:
             src_r = str(src)
             dst_r = str(dst)
 
-        cmd = [
-            "rsync",
-            "-aHAX",
-            "--info=progress2",
-            "--partial",
-            "--inplace",
-            "--numeric-ids",
-        ] + rsync_extra + [src_r, dst_r]
+        rsync_flags = get_rsync_flags(rsync_mode)
+        cmd = ["rsync"] + rsync_flags + rsync_extra + [src_r, dst_r]
 
         print(f"\n[{idx}/{len(plan.moves)}] Moving {m.unit.share}/{m.unit.rel_path} "
               f"from {m.unit.src_disk} -> {m.dest_disk} ({human_bytes(m.unit.size_bytes)})")
@@ -444,11 +461,23 @@ def main():
     p.add_argument("--load-plan", help="Load plan from JSON and skip planning")
     p.add_argument("--execute", action="store_true", help="Execute moves (default is dry-run)")
     p.add_argument("--rsync-extra", default="", help="Extra args to pass to rsync (comma-separated, e.g., '--bwlimit=50M,--checksum')")
+    p.add_argument("--rsync-mode", choices=list(RSYNC_MODES.keys()), default="fast", 
+                   help="Rsync performance mode: fast (minimal CPU), balanced (moderate features), integrity (full features)")
+    p.add_argument("--list-rsync-modes", action="store_true", help="List available rsync modes and exit")
     p.add_argument("--allow-merge", action="store_true", help="Allow merging into existing destination directories if present")
     p.add_argument("--verbose", "-v", action="store_true", help="Enable verbose logging")
     p.add_argument("--log-file", help="Write logs to this file (default: stderr only)")
 
     args = p.parse_args()
+    
+    # Handle --list-rsync-modes
+    if args.list_rsync_modes:
+        print("Available rsync performance modes:\n")
+        for mode, config in RSYNC_MODES.items():
+            flags_str = " ".join(config["flags"])
+            print(f"  {mode:>9}: {config['description']}")
+            print(f"           Flags: {flags_str}\n")
+        return 0
     
     # Configure logging
     log_level = logging.DEBUG if args.verbose else logging.INFO
@@ -528,7 +557,8 @@ def main():
     # Step 4: Execute (or dry-run)
     mode = "EXECUTE" if args.execute else "DRY-RUN"
     print(f"\n=== {mode} {len(plan.moves)} planned move(s) ===")
-    failures = perform_plan(plan, execute=args.execute, rsync_extra=rsync_extra, allow_merge=args.allow_merge)
+    print(f"Using rsync mode: {args.rsync_mode} - {RSYNC_MODES[args.rsync_mode]['description']}")
+    failures = perform_plan(plan, execute=args.execute, rsync_extra=rsync_extra, allow_merge=args.allow_merge, rsync_mode=args.rsync_mode)
 
     if failures:
         print(f"\nCompleted with {failures} failure(s). Review the log above.")
