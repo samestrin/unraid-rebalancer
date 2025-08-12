@@ -1635,6 +1635,16 @@ def main():
     p.add_argument("--vm-status", action="store_true", help="Show VM status and exit")
     p.add_argument("--send-notification", nargs=2, metavar=("TITLE", "MESSAGE"), help="Send Unraid notification with title and message")
     p.add_argument("--notification-level", choices=["normal", "warning", "alert", "critical"], default="normal", help="Notification level for --send-notification")
+    
+    # Unraid User Scripts Integration
+    p.add_argument("--list-user-scripts", action="store_true", help="List available Unraid user scripts and exit")
+    p.add_argument("--create-user-script", help="Create user script for schedule (provide schedule name)")
+    p.add_argument("--maintenance-window", action="store_true", help="Check if currently in maintenance window and exit")
+    
+    # Scheduling Templates
+    p.add_argument("--list-templates", action="store_true", help="List available scheduling templates and exit")
+    p.add_argument("--create-from-template", help="Create schedule from template (provide template name)")
+    p.add_argument("--template-name", help="Custom name for schedule created from template")
 
     args = p.parse_args()
     
@@ -2475,6 +2485,87 @@ def main():
         for vm in vms:
             status_icon = "🟢" if vm['status'] == 'running' else "🔴"
             print(f"{status_icon} {vm['name']:<20} {vm['status']:<10} CPU: {vm.get('cpu', 'N/A')} RAM: {vm.get('memory', 'N/A')}")
+        
+        return 0
+    
+    if args.list_user_scripts:
+        if not UnraidIntegrationManager:
+            print("Unraid integration not available")
+            return 1
+        
+        manager = UnraidIntegrationManager()
+        scripts = manager.get_user_scripts()
+        
+        print("\nUnraid User Scripts:")
+        print("-" * 60)
+        for script in scripts:
+            print(f"📄 {script['name']:<30} {script['path']}")
+        
+        return 0
+    
+    if args.create_user_script:
+        if not UnraidIntegrationManager:
+            print("Unraid integration not available")
+            return 1
+        
+        manager = UnraidIntegrationManager()
+        script_path = manager.create_rebalancer_user_script()
+        
+        if script_path:
+            print(f"✅ Created rebalancer user script: {script_path}")
+            print("Script can be configured and scheduled through Unraid's User Scripts plugin")
+        else:
+            print("❌ Failed to create user script")
+            return 1
+        
+        return 0
+    
+    if args.check_maintenance:
+        if not UnraidIntegrationManager:
+            print("Unraid integration not available")
+            return 1
+        
+        manager = UnraidIntegrationManager()
+        in_maintenance = manager.is_maintenance_window()
+        
+        if in_maintenance:
+            print("🔧 System is currently in maintenance window")
+        else:
+            print("✅ System is not in maintenance window")
+        
+        return 0
+    
+    if args.list_templates:
+        if not UnraidIntegrationManager:
+            print("Unraid integration not available")
+            return 1
+        
+        manager = UnraidIntegrationManager()
+        templates = manager.get_scheduling_templates()
+        
+        print("\nAvailable Scheduling Templates:")
+        print("-" * 60)
+        for template in templates:
+            print(f"📋 {template['name']:<20} - {template['description']}")
+            print(f"   Schedule: {template['schedule']}")
+            print(f"   Options: {', '.join(template['options'])}")
+            print()
+        
+        return 0
+    
+    if args.create_from_template:
+        if not UnraidIntegrationManager:
+            print("Unraid integration not available")
+            return 1
+        
+        manager = UnraidIntegrationManager()
+        success = manager.create_template_schedule(args.create_from_template)
+        
+        if success:
+            print(f"✅ Created schedule from template: {args.create_from_template}")
+        else:
+            print(f"❌ Failed to create schedule from template: {args.create_from_template}")
+            return 1
         
         return 0
     

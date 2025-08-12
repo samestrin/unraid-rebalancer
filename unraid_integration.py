@@ -490,6 +490,8 @@ class UnraidIntegrationManager:
     def __init__(self):
         self.logger = logging.getLogger(__name__)
         self.monitor = UnraidSystemMonitor()
+        self.user_scripts_path = Path("/boot/config/plugins/user.scripts/scripts")
+        self.maintenance_config_path = Path("/boot/config/plugins/dynamix/dynamix.cfg")
         
     def pre_rebalance_checks(self) -> Tuple[bool, List[str]]:
         """Perform comprehensive pre-rebalance safety checks."""
@@ -518,6 +520,200 @@ class UnraidIntegrationManager:
             # This is a warning, not a blocking issue
         
         return len(all_issues) == 0, all_issues
+    
+    def perform_pre_rebalance_checks(self) -> bool:
+        """Perform pre-rebalance safety checks and return success status."""
+        safe, issues = self.pre_rebalance_checks()
+        
+        if not safe:
+            self.logger.error("Pre-rebalance safety checks failed:")
+            for issue in issues:
+                self.logger.error(f"  - {issue}")
+        
+        return safe
+    
+    def get_user_scripts(self) -> List[Dict[str, Any]]:
+        """Get list of available user scripts."""
+        scripts = []
+        
+        if not self.user_scripts_path.exists():
+            self.logger.warning("User scripts directory not found")
+            return scripts
+        
+        try:
+            for script_dir in self.user_scripts_path.iterdir():
+                if not script_dir.is_dir():
+                    continue
+                
+                script_file = script_dir / "script"
+                if script_file.exists():
+                    scripts.append({
+                        "name": script_dir.name,
+                        "path": str(script_file),
+                        "directory": str(script_dir),
+                        "executable": script_file.stat().st_mode & 0o111 != 0
+                    })
+        
+        except Exception as e:
+            self.logger.error(f"Failed to scan user scripts: {e}")
+        
+        return scripts
+    
+    def create_rebalancer_user_script(self, schedule_name: str, cron_expression: str, 
+                                     rebalancer_args: str) -> bool:
+        """Create a user script for scheduled rebalancing."""
+        try:
+            script_dir = self.user_scripts_path / f"rebalancer_{schedule_name}"
+            script_dir.mkdir(parents=True, exist_ok=True)
+            
+            script_content = f'''#!/bin/bash
+# Unraid Rebalancer - {schedule_name}
+# Generated automatically by Unraid Rebalancer
+# Schedule: {cron_expression}
+
+cd /mnt/user/appdata/unraid-rebalancer
+python3 unraid_rebalancer.py {rebalancer_args}
+'''
+            
+            script_file = script_dir / "script"
+            script_file.write_text(script_content)
+            script_file.chmod(0o755)
+            
+            # Create description file
+            desc_file = script_dir / "description"
+            desc_file.write_text(f"Automated rebalancing schedule: {schedule_name}")
+            
+            self.logger.info(f"Created user script for schedule: {schedule_name}")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Failed to create user script: {e}")
+            return False
+    
+    def is_maintenance_window(self) -> bool:
+        """Check if we're currently in a maintenance window."""
+        try:
+            if not self.maintenance_config_path.exists():
+                return False
+            
+            config = self._parse_maintenance_config()
+            if not config.get("maintenance_enabled", False):
+                return False
+            
+            current_time = datetime.now()
+            start_time = config.get("maintenance_start")
+            end_time = config.get("maintenance_end")
+            
+            if start_time and end_time:
+                # Handle maintenance windows that cross midnight
+                if start_time <= end_time:
+                    return start_time <= current_time.time() <= end_time
+                else:
+                    return current_time.time() >= start_time or current_time.time() <= end_time
+            
+        except Exception as e:
+            self.logger.debug(f"Failed to check maintenance window: {e}")
+        
+        return False
+    
+    def _parse_maintenance_config(self) -> Dict[str, Any]:
+        """Parse Unraid maintenance configuration."""
+        config = {}
+        
+        try:
+            content = self.maintenance_config_path.read_text()
+            for line in content.split("\n"):
+                line = line.strip()
+                if "=" in line and not line.startswith("#"):
+                    key, value = line.split("=", 1)
+                    key = key.strip()
+                    value = value.strip().strip('"')
+                    
+                    if key == "maintenance":
+                        config["maintenance_enabled"] = value.lower() == "yes"
+                    elif key == "maintenanceStart":
+                        try:
+                            hour, minute = map(int, value.split(":"))
+                            config["maintenance_start"] = datetime.min.time().replace(hour=hour, minute=minute)
+                        except ValueError:
+                            pass
+                    elif key == "maintenanceEnd":
+                        try:
+                            hour, minute = map(int, value.split(":"))
+                            config["maintenance_end"] = datetime.min.time().replace(hour=hour, minute=minute)
+                        except ValueError:
+                            pass
+        
+        except Exception as e:
+            self.logger.debug(f"Failed to parse maintenance config: {e}")
+        
+        return config
+    
+    def get_scheduling_templates(self) -> Dict[str, Dict[str, Any]]:
+        """Get predefined scheduling templates for common Unraid scenarios."""
+        return {
+            "nightly_light": {
+                "name": "Nightly Light Rebalancing",
+                "description": "Light rebalancing during low-activity hours",
+                "cron": "0 2 * * *",  # 2 AM daily
+                "args": "--target-percent 85 --min-unit-size 1GiB --rsync-mode fast",
+                "max_runtime": 4,
+                "resource_limits": {"cpu_threshold": 80, "io_threshold": 70}
+            },
+            "weekly_full": {
+                "name": "Weekly Full Rebalancing",
+                "description": "Comprehensive weekly rebalancing",
+                "cron": "0 1 * * 0",  # 1 AM Sunday
+                "args": "--target-percent 80 --min-unit-size 500MiB --rsync-mode balanced",
+                "max_runtime": 8,
+                "resource_limits": {"cpu_threshold": 90, "io_threshold": 80}
+            },
+            "maintenance_window": {
+                "name": "Maintenance Window Rebalancing",
+                "description": "Rebalancing during scheduled maintenance",
+                "cron": "0 3 * * 6",  # 3 AM Saturday
+                "args": "--target-percent 75 --rsync-mode integrity",
+                "max_runtime": 12,
+                "resource_limits": {"cpu_threshold": 95, "io_threshold": 90}
+            },
+            "parity_safe": {
+                "name": "Parity-Safe Rebalancing",
+                "description": "Conservative rebalancing that avoids parity operations",
+                "cron": "0 4 * * 1-5",  # 4 AM weekdays
+                "args": "--target-percent 90 --min-unit-size 2GiB --rsync-mode fast",
+                "max_runtime": 3,
+                "resource_limits": {"cpu_threshold": 60, "io_threshold": 50},
+                "conditions": ["no_parity_check", "no_rebuilding"]
+            },
+            "cache_optimization": {
+                "name": "Cache Pool Optimization",
+                "description": "Focus on cache pool and frequently accessed shares",
+                "cron": "0 23 * * *",  # 11 PM daily
+                "args": "--target-percent 80 --include-shares Downloads,Media --rsync-mode balanced",
+                "max_runtime": 2,
+                "resource_limits": {"cpu_threshold": 75, "io_threshold": 65}
+            }
+        }
+    
+    def create_template_schedule(self, template_name: str, custom_name: str = None) -> Optional[Dict[str, Any]]:
+        """Create a schedule configuration from a template."""
+        templates = self.get_scheduling_templates()
+        
+        if template_name not in templates:
+            self.logger.error(f"Template '{template_name}' not found")
+            return None
+        
+        template = templates[template_name].copy()
+        
+        # Customize the schedule name if provided
+        if custom_name:
+            template["name"] = custom_name
+        
+        # Add template metadata
+        template["template_source"] = template_name
+        template["created_at"] = datetime.now().isoformat()
+        
+        return template
     
     def post_rebalance_actions(self, success: bool, summary: Dict[str, Any]) -> None:
         """Perform post-rebalance actions and notifications."""
