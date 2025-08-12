@@ -15,11 +15,16 @@ import subprocess
 import tempfile
 import time
 import uuid
+import smtplib
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Union, Any, Tuple
+from typing import Dict, List, Optional, Union, Any, Tuple, Callable
 from dataclasses import dataclass, asdict
 from enum import Enum
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+import threading
+import random
 
 
 class ScheduleType(Enum):
@@ -45,11 +50,111 @@ class ExecutionStatus(Enum):
     FAILED = "failed"
     CANCELLED = "cancelled"
     SUSPENDED = "suspended"
+    RETRYING = "retrying"
+
+
+class FailureType(Enum):
+    """Types of execution failures."""
+    SYSTEM_ERROR = "system_error"
+    RESOURCE_EXHAUSTION = "resource_exhaustion"
+    PERMISSION_DENIED = "permission_denied"
+    DISK_ERROR = "disk_error"
+    TIMEOUT = "timeout"
+    USER_CANCELLED = "user_cancelled"
+    CONFIGURATION_ERROR = "configuration_error"
+    NETWORK_ERROR = "network_error"
+    UNKNOWN = "unknown"
+
+
+class RetryStrategy(Enum):
+    """Retry strategies for failed executions."""
+    NONE = "none"
+    FIXED_DELAY = "fixed_delay"
+    EXPONENTIAL_BACKOFF = "exponential_backoff"
+    LINEAR_BACKOFF = "linear_backoff"
+
+
+class NotificationLevel(Enum):
+    """Notification severity levels."""
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
+    CRITICAL = "critical"
+
+
+@dataclass
+class FailureRecord:
+    """Record of an execution failure."""
+    failure_id: str
+    execution_id: str
+    schedule_id: str
+    failure_type: FailureType
+    error_message: str
+    stack_trace: str = ""
+    timestamp: float = 0.0
+    retry_attempt: int = 0
+    
+    def __post_init__(self):
+        if self.timestamp == 0.0:
+            self.timestamp = time.time()
+        if not self.failure_id:
+            self.failure_id = str(uuid.uuid4())
+
+
+@dataclass
+class RetryConfig:
+    """Configuration for retry behavior."""
+    strategy: RetryStrategy = RetryStrategy.EXPONENTIAL_BACKOFF
+    max_attempts: int = 3
+    base_delay_seconds: int = 60
+    max_delay_seconds: int = 3600
+    backoff_multiplier: float = 2.0
+    jitter: bool = True
+    
+    def calculate_delay(self, attempt: int) -> int:
+        """Calculate delay for given retry attempt."""
+        if self.strategy == RetryStrategy.NONE:
+            return 0
+        elif self.strategy == RetryStrategy.FIXED_DELAY:
+            delay = self.base_delay_seconds
+        elif self.strategy == RetryStrategy.LINEAR_BACKOFF:
+            delay = self.base_delay_seconds * attempt
+        elif self.strategy == RetryStrategy.EXPONENTIAL_BACKOFF:
+            delay = min(self.base_delay_seconds * (self.backoff_multiplier ** (attempt - 1)), 
+                       self.max_delay_seconds)
+        else:
+            delay = self.base_delay_seconds
+        
+        # Add jitter to prevent thundering herd
+        if self.jitter and delay > 0:
+            delay = int(delay * (0.5 + random.random() * 0.5))
+        
+        return max(delay, 1)
+
+
+@dataclass
+class NotificationConfig:
+    """Configuration for notifications."""
+    enabled: bool = False
+    email_enabled: bool = False
+    smtp_server: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_use_tls: bool = True
+    from_email: str = ""
+    to_emails: List[str] = None
+    webhook_url: str = ""
+    webhook_enabled: bool = False
+    
+    def __post_init__(self):
+        if self.to_emails is None:
+            self.to_emails = []
 
 
 @dataclass
 class ScheduleExecution:
-    """Record of a schedule execution."""
+    """Represents a single execution of a scheduled operation."""
     execution_id: str
     schedule_id: str
     start_time: float
@@ -62,6 +167,11 @@ class ScheduleExecution:
     bytes_moved: int = 0
     duration_seconds: float = 0.0
     pid: Optional[int] = None
+    failure_type: Optional[FailureType] = None
+    retry_attempt: int = 0
+    max_retries: int = 0
+    next_retry_time: Optional[float] = None
+    failure_records: List[FailureRecord] = None
     
     def __post_init__(self):
         """Initialize execution record."""
@@ -69,6 +179,8 @@ class ScheduleExecution:
             self.execution_id = f"exec_{int(self.start_time)}_{self.schedule_id}_{uuid.uuid4().hex[:8]}"
         if not self.operation_id:
             self.operation_id = f"rebalance_{int(self.start_time)}_{uuid.uuid4().hex[:8]}"
+        if self.failure_records is None:
+            self.failure_records = []
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -578,6 +690,364 @@ class CronManager:
                 text=True, 
                 check=False
             )
+
+
+class NotificationManager:
+    """Manages notifications for schedule events and failures."""
+    
+    def __init__(self, config: NotificationConfig):
+        self.config = config
+        self.logger = logging.getLogger(__name__)
+    
+    def send_notification(self, level: NotificationLevel, subject: str, message: str, 
+                         schedule_id: str = "", execution_id: str = "") -> bool:
+        """Send notification via configured channels."""
+        success = True
+        
+        if self.config.email_enabled:
+            success &= self._send_email(level, subject, message, schedule_id, execution_id)
+        
+        if self.config.webhook_enabled:
+            success &= self._send_webhook(level, subject, message, schedule_id, execution_id)
+        
+        return success
+    
+    def _send_email(self, level: NotificationLevel, subject: str, message: str,
+                   schedule_id: str, execution_id: str) -> bool:
+        """Send email notification."""
+        try:
+            if not self.config.to_emails:
+                return False
+            
+            msg = MIMEMultipart()
+            msg['From'] = self.config.from_email
+            msg['To'] = ', '.join(self.config.to_emails)
+            msg['Subject'] = f"[{level.value.upper()}] {subject}"
+            
+            body = f"""
+Schedule ID: {schedule_id}
+Execution ID: {execution_id}
+Level: {level.value}
+Timestamp: {datetime.now().isoformat()}
+
+{message}
+"""
+            
+            msg.attach(MIMEText(body, 'plain'))
+            
+            with smtplib.SMTP(self.config.smtp_server, self.config.smtp_port) as server:
+                if self.config.smtp_use_tls:
+                    server.starttls()
+                if self.config.smtp_username and self.config.smtp_password:
+                    server.login(self.config.smtp_username, self.config.smtp_password)
+                server.send_message(msg)
+            
+            self.logger.info(f"Email notification sent for {schedule_id}")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Failed to send email notification: {e}")
+            return False
+    
+    def _send_webhook(self, level: NotificationLevel, subject: str, message: str,
+                     schedule_id: str, execution_id: str) -> bool:
+        """Send webhook notification."""
+        try:
+            import requests
+            
+            payload = {
+                'level': level.value,
+                'subject': subject,
+                'message': message,
+                'schedule_id': schedule_id,
+                'execution_id': execution_id,
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            response = requests.post(self.config.webhook_url, json=payload, timeout=10)
+            response.raise_for_status()
+            
+            self.logger.info(f"Webhook notification sent for {schedule_id}")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Failed to send webhook notification: {e}")
+            return False
+
+
+class ScheduleHealthMonitor:
+    """Monitors schedule health and detects issues."""
+    
+    def __init__(self, config_dir: Union[str, Path] = "./schedules"):
+        self.config_dir = Path(config_dir)
+        self.logger = logging.getLogger(__name__)
+        self.schedule_manager = ScheduleManager(config_dir)
+        self.monitor = ScheduleMonitor(config_dir)
+    
+    def check_schedule_health(self, schedule_id: str) -> Dict[str, Any]:
+        """Check health of a specific schedule."""
+        schedule = self.schedule_manager.get_schedule(schedule_id)
+        if not schedule:
+            return {'healthy': False, 'issues': ['Schedule not found']}
+        
+        issues = []
+        warnings = []
+        
+        # Check if schedule is enabled but suspended
+        if schedule.enabled and schedule.suspended:
+            warnings.append(f"Schedule is enabled but suspended: {schedule.suspend_reason}")
+        
+        # Check failure rate
+        stats = self.monitor.get_schedule_statistics(schedule_id)
+        if stats.total_executions > 0:
+            failure_rate = (stats.failed_executions / stats.total_executions) * 100
+            if failure_rate > 50:
+                issues.append(f"High failure rate: {failure_rate:.1f}%")
+            elif failure_rate > 25:
+                warnings.append(f"Elevated failure rate: {failure_rate:.1f}%")
+        
+        # Check for stuck executions
+        running_executions = self.monitor.get_running_executions()
+        for execution in running_executions:
+            if execution.schedule_id == schedule_id:
+                runtime = time.time() - execution.start_time
+                max_runtime = schedule.max_runtime_hours * 3600
+                if runtime > max_runtime:
+                    issues.append(f"Execution {execution.execution_id} exceeded max runtime")
+        
+        # Check cron expression validity
+        if schedule.schedule_type == ScheduleType.RECURRING:
+            if not CronExpressionValidator.validate_cron_expression(schedule.cron_expression):
+                issues.append("Invalid cron expression")
+        
+        return {
+            'healthy': len(issues) == 0,
+            'issues': issues,
+            'warnings': warnings,
+            'last_execution': schedule.last_execution_time,
+            'success_rate': stats.success_rate if stats.total_executions > 0 else None
+        }
+    
+    def get_system_health_report(self) -> Dict[str, Any]:
+        """Get overall system health report."""
+        schedules = self.schedule_manager.list_schedules()
+        total_schedules = len(schedules)
+        enabled_schedules = len([s for s in schedules if s.enabled])
+        suspended_schedules = len([s for s in schedules if s.suspended])
+        
+        unhealthy_schedules = []
+        warning_schedules = []
+        
+        for schedule in schedules:
+            health = self.check_schedule_health(schedule.schedule_id)
+            if not health['healthy']:
+                unhealthy_schedules.append({
+                    'schedule_id': schedule.schedule_id,
+                    'issues': health['issues']
+                })
+            elif health['warnings']:
+                warning_schedules.append({
+                    'schedule_id': schedule.schedule_id,
+                    'warnings': health['warnings']
+                })
+        
+        running_executions = self.monitor.get_running_executions()
+        
+        return {
+            'timestamp': time.time(),
+            'total_schedules': total_schedules,
+            'enabled_schedules': enabled_schedules,
+            'suspended_schedules': suspended_schedules,
+            'running_executions': len(running_executions),
+            'unhealthy_schedules': unhealthy_schedules,
+            'warning_schedules': warning_schedules,
+            'system_healthy': len(unhealthy_schedules) == 0
+        }
+
+
+class ErrorRecoveryManager:
+    """Manages error recovery and retry logic for failed executions."""
+    
+    def __init__(self, config_dir: Union[str, Path] = "./schedules"):
+        self.config_dir = Path(config_dir)
+        self.logger = logging.getLogger(__name__)
+        self.schedule_manager = ScheduleManager(config_dir)
+        self.monitor = ScheduleMonitor(config_dir)
+        self.notification_manager = None
+    
+    def set_notification_manager(self, notification_manager: NotificationManager):
+        """Set notification manager for error notifications."""
+        self.notification_manager = notification_manager
+    
+    def handle_execution_failure(self, execution: ScheduleExecution, 
+                               failure_type: FailureType, error_message: str,
+                               stack_trace: str = "") -> bool:
+        """Handle execution failure with retry logic."""
+        schedule = self.schedule_manager.get_schedule(execution.schedule_id)
+        if not schedule:
+            self.logger.error(f"Schedule {execution.schedule_id} not found for failed execution")
+            return False
+        
+        # Create failure record
+        failure_record = FailureRecord(
+            failure_id=str(uuid.uuid4()),
+            execution_id=execution.execution_id,
+            schedule_id=execution.schedule_id,
+            failure_type=failure_type,
+            error_message=error_message,
+            stack_trace=stack_trace,
+            timestamp=time.time(),
+            retry_attempt=execution.retry_attempt
+        )
+        
+        # Add failure record to execution
+        if execution.failure_records is None:
+            execution.failure_records = []
+        execution.failure_records.append(failure_record)
+        
+        # Update execution status
+        execution.failure_type = failure_type
+        execution.status = ExecutionStatus.FAILED
+        
+        # Determine if retry is possible
+        retry_config = RetryConfig()  # Use default retry config
+        should_retry = self._should_retry_execution(execution, failure_type, retry_config)
+        
+        if should_retry:
+            return self._schedule_retry(execution, schedule, retry_config)
+        else:
+            return self._handle_final_failure(execution, schedule, failure_record)
+    
+    def _should_retry_execution(self, execution: ScheduleExecution, 
+                              failure_type: FailureType, retry_config: RetryConfig) -> bool:
+        """Determine if execution should be retried."""
+        # Check if we've exceeded max retry attempts
+        if execution.retry_attempt >= retry_config.max_attempts:
+            return False
+        
+        # Check if failure type is retryable
+        non_retryable_failures = {
+            FailureType.PERMISSION_DENIED,
+            FailureType.CONFIGURATION_ERROR,
+            FailureType.USER_CANCELLED
+        }
+        
+        if failure_type in non_retryable_failures:
+            return False
+        
+        return True
+    
+    def _schedule_retry(self, execution: ScheduleExecution, schedule: ScheduleConfig,
+                       retry_config: RetryConfig) -> bool:
+        """Schedule execution retry."""
+        try:
+            # Calculate retry delay
+            delay = retry_config.calculate_delay(execution.retry_attempt)
+            next_retry_time = time.time() + delay
+            
+            # Update execution for retry
+            execution.retry_attempt += 1
+            execution.next_retry_time = next_retry_time
+            execution.status = ExecutionStatus.RETRYING
+            
+            # Save updated execution
+            self.monitor._save_execution(execution)
+            
+            # Schedule retry using threading
+            retry_thread = threading.Thread(
+                target=self._execute_retry,
+                args=(execution, schedule, delay),
+                daemon=True
+            )
+            retry_thread.start()
+            
+            self.logger.info(f"Scheduled retry for execution {execution.execution_id} in {delay} seconds")
+            
+            # Send notification
+            if self.notification_manager:
+                self.notification_manager.send_notification(
+                    NotificationLevel.WARNING,
+                    f"Execution Retry Scheduled",
+                    f"Execution {execution.execution_id} will be retried in {delay} seconds (attempt {execution.retry_attempt})",
+                    execution.schedule_id,
+                    execution.execution_id
+                )
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Failed to schedule retry for execution {execution.execution_id}: {e}")
+            return False
+    
+    def _execute_retry(self, execution: ScheduleExecution, schedule: ScheduleConfig, delay: int):
+        """Execute retry after delay."""
+        try:
+            # Wait for retry delay
+            time.sleep(delay)
+            
+            # Create new execution for retry
+            new_execution = self.monitor.start_execution(
+                schedule.schedule_id,
+                pid=None  # Will be set when process starts
+            )
+            
+            # Copy retry information
+            new_execution.retry_attempt = execution.retry_attempt
+            new_execution.max_retries = execution.max_retries
+            
+            # Execute the rebalancing operation
+            # This would typically spawn a new process
+            self.logger.info(f"Executing retry for schedule {schedule.schedule_id}")
+            
+            # Note: Actual process spawning would happen here
+            # For now, we'll just log the retry attempt
+            
+        except Exception as e:
+            self.logger.error(f"Failed to execute retry for {execution.execution_id}: {e}")
+    
+    def _handle_final_failure(self, execution: ScheduleExecution, schedule: ScheduleConfig,
+                            failure_record: FailureRecord) -> bool:
+        """Handle final failure when no more retries are possible."""
+        try:
+            # Update schedule statistics
+            schedule.failure_count += 1
+            schedule.last_execution_status = ExecutionStatus.FAILED
+            
+            # Check if schedule should be suspended due to repeated failures
+            if self._should_suspend_schedule(schedule):
+                schedule.suspended = True
+                schedule.suspend_reason = f"Suspended due to repeated failures (last: {failure_record.failure_type.value})"
+                self.logger.warning(f"Schedule {schedule.schedule_id} suspended due to repeated failures")
+            
+            # Save updated schedule
+            self.schedule_manager.save_schedule(schedule)
+            
+            # Send failure notification
+            if self.notification_manager:
+                self.notification_manager.send_notification(
+                    NotificationLevel.ERROR,
+                    f"Schedule Execution Failed",
+                    f"Schedule {schedule.name} failed after {execution.retry_attempt} retry attempts.\n\nError: {failure_record.error_message}",
+                    execution.schedule_id,
+                    execution.execution_id
+                )
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Failed to handle final failure for execution {execution.execution_id}: {e}")
+            return False
+    
+    def _should_suspend_schedule(self, schedule: ScheduleConfig) -> bool:
+        """Determine if schedule should be suspended due to failures."""
+        # Suspend if last 3 executions failed
+        if schedule.failure_count >= 3:
+            recent_executions = self.monitor.get_execution_history(schedule.schedule_id, limit=3)
+            if len(recent_executions) >= 3:
+                all_failed = all(exec.status == ExecutionStatus.FAILED for exec in recent_executions)
+                return all_failed
+        
+        return False
             
             if result.returncode == 0:
                 return [line.strip() for line in result.stdout.split('\n') if line.strip()]

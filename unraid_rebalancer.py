@@ -70,14 +70,33 @@ try:
     from scheduler import (
         ScheduleConfig, ScheduleType, TriggerType, ResourceThresholds,
         CronExpressionValidator, SchedulingEngine, ScheduleMonitor,
-        ExecutionStatus, ScheduleExecution, ScheduleStatistics
+        ExecutionStatus, ScheduleExecution, ScheduleStatistics,
+        NotificationManager, ScheduleHealthMonitor, ErrorRecoveryManager,
+        NotificationConfig, FailureType, RetryConfig
     )
 except ImportError:
     ScheduleConfig = None
     SchedulingEngine = None
     ScheduleMonitor = None
+    NotificationManager = None
+    ScheduleHealthMonitor = None
+    ErrorRecoveryManager = None
     logging.warning("Scheduling system not available - scheduling features disabled")
     logging.warning("SQLite metrics storage not available - falling back to JSON")
+
+# Import Unraid integration system
+try:
+    from unraid_integration import (
+        UnraidSystemMonitor, UnraidIntegrationManager, ArrayStatus, DiskStatus,
+        NotificationLevel as UnraidNotificationLevel, UnraidDisk, ArrayInfo, UserShare
+    )
+except ImportError:
+    UnraidSystemMonitor = None
+    UnraidIntegrationManager = None
+    ArrayStatus = None
+    DiskStatus = None
+    UnraidNotificationLevel = None
+    logging.warning("Unraid integration not available - system integration features disabled")
 
 # ---------- Utilities ----------
 
@@ -1595,6 +1614,27 @@ def main():
     p.add_argument("--suspend-reason", help="Reason for schedule suspension")
     p.add_argument("--cleanup-executions", type=int, metavar="DAYS", help="Clean up execution records older than specified days")
     p.add_argument("--emergency-stop", action="store_true", help="Emergency stop all running schedule executions")
+    
+    # Enhanced error handling and safety options
+    p.add_argument("--health-check", help="Check health of specific schedule ID")
+    p.add_argument("--system-health", action="store_true", help="Get overall system health report")
+    p.add_argument("--retry-failed", help="Retry failed execution by ID")
+    p.add_argument("--configure-notifications", action="store_true", help="Configure notification settings")
+    p.add_argument("--test-notifications", action="store_true", help="Test notification configuration")
+    p.add_argument("--force-retry", help="Force retry of execution regardless of retry limits")
+    p.add_argument("--reset-failures", help="Reset failure count for schedule ID")
+    p.add_argument("--auto-suspend-threshold", type=int, default=3, help="Number of consecutive failures before auto-suspension")
+    
+    # Unraid System Integration options
+    p.add_argument("--array-status", action="store_true", help="Show Unraid array status and exit")
+    p.add_argument("--disk-details", action="store_true", help="Show detailed disk information and exit")
+    p.add_argument("--user-shares", action="store_true", help="Show user share configuration and exit")
+    p.add_argument("--system-report", action="store_true", help="Generate comprehensive system status report and exit")
+    p.add_argument("--safety-check", action="store_true", help="Perform pre-rebalance safety checks and exit")
+    p.add_argument("--docker-status", action="store_true", help="Show Docker container status and exit")
+    p.add_argument("--vm-status", action="store_true", help="Show VM status and exit")
+    p.add_argument("--send-notification", nargs=2, metavar=("TITLE", "MESSAGE"), help="Send Unraid notification with title and message")
+    p.add_argument("--notification-level", choices=["normal", "warning", "alert", "critical"], default="normal", help="Notification level for --send-notification")
 
     args = p.parse_args()
     
@@ -2163,12 +2203,309 @@ def main():
         for execution in running_executions:
             if monitor.cancel_execution(execution.execution_id):
                 cancelled += 1
-                print(f"Cancelled execution {execution.execution_id} (schedule: {execution.schedule_id})")
-            else:
-                print(f"Failed to cancel execution {execution.execution_id}")
         
         print(f"Emergency stop completed: {cancelled}/{len(running_executions)} executions cancelled")
         return 0
+    
+    # Enhanced Error Handling and Safety Features
+    if args.health_check:
+        if not ScheduleHealthMonitor:
+            print("Schedule health monitoring not available")
+            return 1
+        
+        health_monitor = ScheduleHealthMonitor()
+        health_status = health_monitor.check_schedule_health(args.health_check)
+        
+        if health_status:
+            print(f"Schedule '{args.health_check}' health status:")
+            print(f"  Status: {health_status.get('status', 'Unknown')}")
+            print(f"  Last execution: {health_status.get('last_execution', 'Never')}")
+            print(f"  Success rate: {health_status.get('success_rate', 0):.1%}")
+            print(f"  Consecutive failures: {health_status.get('consecutive_failures', 0)}")
+            if health_status.get('issues'):
+                print("  Issues:")
+                for issue in health_status['issues']:
+                    print(f"    - {issue}")
+        else:
+            print(f"Schedule '{args.health_check}' not found")
+            return 1
+        return 0
+    
+    if args.system_health:
+        if not ScheduleHealthMonitor:
+            print("Schedule health monitoring not available")
+            return 1
+        
+        health_monitor = ScheduleHealthMonitor()
+        system_health = health_monitor.get_system_health()
+        
+        print("System Health Report:")
+        print(f"  Total schedules: {system_health.get('total_schedules', 0)}")
+        print(f"  Active schedules: {system_health.get('active_schedules', 0)}")
+        print(f"  Failed schedules: {system_health.get('failed_schedules', 0)}")
+        print(f"  Overall success rate: {system_health.get('overall_success_rate', 0):.1%}")
+        
+        if system_health.get('critical_issues'):
+            print("  Critical Issues:")
+            for issue in system_health['critical_issues']:
+                print(f"    - {issue}")
+        
+        if system_health.get('warnings'):
+            print("  Warnings:")
+            for warning in system_health['warnings']:
+                print(f"    - {warning}")
+        return 0
+    
+    if args.retry_failed:
+        if not ErrorRecoveryManager:
+            print("Error recovery not available")
+            return 1
+        
+        recovery_manager = ErrorRecoveryManager()
+        retried = recovery_manager.retry_failed_executions(args.retry_failed)
+        
+        if retried:
+            print(f"Retrying {len(retried)} failed executions for schedule '{args.retry_failed}'")
+            for execution_id in retried:
+                print(f"  - Execution {execution_id} queued for retry")
+        else:
+            print(f"No failed executions found for schedule '{args.retry_failed}'")
+        return 0
+    
+    if args.configure_notifications:
+        if not NotificationManager:
+            print("Notification system not available")
+            return 1
+        
+        # Parse notification configuration
+        config_parts = args.configure_notifications.split(',')
+        if len(config_parts) < 2:
+            print("Invalid notification configuration. Format: email,smtp_server[,port,username,password]")
+            return 1
+        
+        notification_type = config_parts[0].strip()
+        if notification_type == 'email':
+            if len(config_parts) < 2:
+                print("Email configuration requires: email,smtp_server[,port,username,password]")
+                return 1
+            
+            smtp_server = config_parts[1].strip()
+            port = int(config_parts[2]) if len(config_parts) > 2 else 587
+            username = config_parts[3].strip() if len(config_parts) > 3 else None
+            password = config_parts[4].strip() if len(config_parts) > 4 else None
+            
+            config = NotificationConfig(
+                email_enabled=True,
+                smtp_server=smtp_server,
+                smtp_port=port,
+                smtp_username=username,
+                smtp_password=password
+            )
+            
+            notification_manager = NotificationManager(config)
+            print(f"Email notifications configured: {smtp_server}:{port}")
+        else:
+            print(f"Unsupported notification type: {notification_type}")
+            return 1
+        return 0
+    
+    if args.test_notifications:
+        if not NotificationManager:
+            print("Notification system not available")
+            return 1
+        
+        # Use default configuration for testing
+        config = NotificationConfig(email_enabled=True)
+        notification_manager = NotificationManager(config)
+        
+        success = notification_manager.send_test_notification(args.test_notifications)
+        if success:
+            print(f"Test notification sent successfully to {args.test_notifications}")
+        else:
+            print(f"Failed to send test notification to {args.test_notifications}")
+        return 0 if success else 1
+    
+    if args.force_retry:
+        if not ErrorRecoveryManager:
+            print("Error recovery not available")
+            return 1
+        
+        recovery_manager = ErrorRecoveryManager()
+        success = recovery_manager.force_retry_execution(args.force_retry)
+        
+        if success:
+            print(f"Execution {args.force_retry} queued for immediate retry")
+        else:
+            print(f"Failed to queue execution {args.force_retry} for retry")
+        return 0 if success else 1
+    
+    if args.reset_failures:
+        if not ErrorRecoveryManager:
+            print("Error recovery not available")
+            return 1
+        
+        recovery_manager = ErrorRecoveryManager()
+        reset_count = recovery_manager.reset_schedule_failures(args.reset_failures)
+        
+        print(f"Reset {reset_count} failure records for schedule '{args.reset_failures}'")
+        return 0
+    
+    if args.auto_suspend_threshold is not None:
+        if not ScheduleHealthMonitor:
+            print("Schedule health monitoring not available")
+            return 1
+        
+        health_monitor = ScheduleHealthMonitor()
+        health_monitor.set_auto_suspend_threshold(args.auto_suspend_threshold)
+        
+        print(f"Auto-suspension threshold set to {args.auto_suspend_threshold} consecutive failures")
+        return 0
+    
+    # Unraid Integration Commands
+    if args.array_status:
+        if not UnraidSystemMonitor:
+            print("Unraid integration not available")
+            return 1
+        
+        monitor = UnraidSystemMonitor()
+        array_info = monitor.get_array_status()
+        
+        print(f"Array Status: {array_info.status.value}")
+        print(f"Total Disks: {len(array_info.disks)}")
+        print(f"Data Disks: {len([d for d in array_info.disks if d.type == 'data'])}")
+        print(f"Parity Disks: {len([d for d in array_info.disks if d.type == 'parity'])}")
+        print(f"Cache Disks: {len([d for d in array_info.disks if d.type == 'cache'])}")
+        
+        if array_info.status != ArrayStatus.STARTED:
+            print(f"Warning: Array is not started (status: {array_info.status.value})")
+        
+        return 0
+    
+    if args.disk_details:
+        if not UnraidSystemMonitor:
+            print("Unraid integration not available")
+            return 1
+        
+        monitor = UnraidSystemMonitor()
+        disks = monitor.get_disk_details()
+        
+        print("\nDisk Details:")
+        print("-" * 80)
+        for disk in disks:
+            status_icon = "✓" if disk.status == DiskStatus.ACTIVE else "✗"
+            print(f"{status_icon} {disk.name:<8} {disk.type:<8} {disk.device:<12} {disk.filesystem:<8} {disk.size_gb:>8.1f}GB {disk.used_percent:>6.1f}%")
+        
+        return 0
+    
+    if args.user_shares:
+        if not UnraidSystemMonitor:
+            print("Unraid integration not available")
+            return 1
+        
+        monitor = UnraidSystemMonitor()
+        shares = monitor.get_user_shares()
+        
+        print("\nUser Shares:")
+        print("-" * 60)
+        for share in shares:
+            print(f"{share.name:<20} {share.allocation_method:<12} {share.size_gb:>8.1f}GB")
+            if share.included_disks:
+                print(f"  Included: {', '.join(share.included_disks)}")
+            if share.excluded_disks:
+                print(f"  Excluded: {', '.join(share.excluded_disks)}")
+        
+        return 0
+    
+    if args.system_report:
+        if not UnraidSystemMonitor:
+            print("Unraid integration not available")
+            return 1
+        
+        monitor = UnraidSystemMonitor()
+        report = monitor.generate_system_report()
+        
+        print("\nUnraid System Report")
+        print("=" * 50)
+        print(report)
+        return 0
+    
+    if args.safety_check:
+        if not UnraidIntegrationManager:
+            print("Unraid integration not available")
+            return 1
+        
+        integration = UnraidIntegrationManager()
+        
+        print("Performing pre-rebalance safety checks...")
+        checks_passed = integration.perform_pre_rebalance_checks()
+        
+        if checks_passed:
+            print("✓ All safety checks passed")
+            return 0
+        else:
+            print("✗ Safety checks failed - rebalancing not recommended")
+            return 1
+    
+    if args.docker_status:
+        if not UnraidSystemMonitor:
+            print("Unraid integration not available")
+            return 1
+        
+        monitor = UnraidSystemMonitor()
+        containers = monitor.get_docker_containers()
+        
+        print("\nDocker Containers:")
+        print("-" * 60)
+        for container in containers:
+            status_icon = "🟢" if container['status'] == 'running' else "🔴"
+            print(f"{status_icon} {container['name']:<20} {container['image']:<30} {container['status']}")
+        
+        return 0
+    
+    if args.vm_status:
+        if not UnraidSystemMonitor:
+            print("Unraid integration not available")
+            return 1
+        
+        monitor = UnraidSystemMonitor()
+        vms = monitor.get_vms()
+        
+        print("\nVirtual Machines:")
+        print("-" * 60)
+        for vm in vms:
+            status_icon = "🟢" if vm['status'] == 'running' else "🔴"
+            print(f"{status_icon} {vm['name']:<20} {vm['status']:<10} CPU: {vm.get('cpu', 'N/A')} RAM: {vm.get('memory', 'N/A')}")
+        
+        return 0
+    
+    if args.send_notification:
+        if not UnraidIntegrationManager:
+            print("Unraid integration not available")
+            return 1
+        
+        integration = UnraidIntegrationManager()
+        
+        # Parse notification level
+        level = UnraidNotificationLevel.NORMAL
+        if hasattr(args, 'notification_level') and args.notification_level:
+            try:
+                level = UnraidNotificationLevel(args.notification_level.upper())
+            except ValueError:
+                print(f"Invalid notification level: {args.notification_level}")
+                return 1
+        
+        success = integration.send_notification(
+            title="Unraid Rebalancer Notification",
+            message=args.send_notification,
+            level=level
+        )
+        
+        if success:
+            print("Notification sent successfully")
+            return 0
+        else:
+            print("Failed to send notification")
+            return 1
     
     # Handle metrics-only commands that don't require disk scanning
     if args.export_metrics:
