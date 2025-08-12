@@ -1467,8 +1467,9 @@ def perform_plan(plan: Plan, execute: bool, rsync_extra: List[str], allow_merge:
 
         # rsync path handling
         if src.is_dir():
-            # Trailing slash to copy contents of dir into directory (rsync semantics)
-            src_r = str(src) + "/"
+            # For directories, we want to move the entire directory, not just its contents
+            # So we use the source directory without trailing slash and ensure the parent exists
+            src_r = str(src)
             dst_r = str(dst)
         else:
             src_r = str(src)
@@ -1506,7 +1507,8 @@ def perform_plan(plan: Plan, execute: bool, rsync_extra: List[str], allow_merge:
             # After successful copy, remove source files
             if src.is_dir():
                 # Remove files that have been copied; then clean up empty dirs
-                rm_cmd = ["rsync", "-aHAX", "--remove-source-files", str(src) + "/", str(dst)]
+                # Use trailing slash on source to remove contents, not the directory itself
+                rm_cmd = ["rsync", "-aHAX", "--remove-source-files", str(src) + "/", str(dst) + "/"]
                 rc2 = run(rm_cmd, dry_run=False)
                 if rc2 != 0:
                     print(f"[WARN] cleanup rsync returned {rc2}")
