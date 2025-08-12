@@ -10,12 +10,14 @@ import json
 import logging
 import os
 import re
+import signal
 import subprocess
 import tempfile
 import time
+import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Union, Any
+from typing import Dict, List, Optional, Union, Any, Tuple
 from dataclasses import dataclass, asdict
 from enum import Enum
 
@@ -33,6 +35,85 @@ class TriggerType(Enum):
     RESOURCE_BASED = "resource_based"
     DISK_USAGE = "disk_usage"
     SYSTEM_IDLE = "system_idle"
+
+
+class ExecutionStatus(Enum):
+    """Status of schedule execution."""
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    SUSPENDED = "suspended"
+
+
+@dataclass
+class ScheduleExecution:
+    """Record of a schedule execution."""
+    execution_id: str
+    schedule_id: str
+    start_time: float
+    end_time: Optional[float] = None
+    status: ExecutionStatus = ExecutionStatus.PENDING
+    exit_code: Optional[int] = None
+    error_message: str = ""
+    operation_id: str = ""
+    files_moved: int = 0
+    bytes_moved: int = 0
+    duration_seconds: float = 0.0
+    pid: Optional[int] = None
+    
+    def __post_init__(self):
+        """Initialize execution record."""
+        if not self.execution_id:
+            self.execution_id = f"exec_{int(self.start_time)}_{self.schedule_id}_{uuid.uuid4().hex[:8]}"
+        if not self.operation_id:
+            self.operation_id = f"rebalance_{int(self.start_time)}_{uuid.uuid4().hex[:8]}"
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        result = asdict(self)
+        result['status'] = self.status.value
+        return result
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'ScheduleExecution':
+        """Create from dictionary."""
+        if 'status' in data and isinstance(data['status'], str):
+            data['status'] = ExecutionStatus(data['status'])
+        return cls(**data)
+
+
+@dataclass
+class ScheduleStatistics:
+    """Statistics for a schedule."""
+    schedule_id: str
+    total_executions: int = 0
+    successful_executions: int = 0
+    failed_executions: int = 0
+    cancelled_executions: int = 0
+    last_execution_time: Optional[float] = None
+    last_success_time: Optional[float] = None
+    last_failure_time: Optional[float] = None
+    average_duration_seconds: float = 0.0
+    total_files_moved: int = 0
+    total_bytes_moved: int = 0
+    
+    @property
+    def success_rate(self) -> float:
+        """Calculate success rate as percentage."""
+        if self.total_executions == 0:
+            return 0.0
+        return (self.successful_executions / self.total_executions) * 100.0
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        return asdict(self)
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'ScheduleStatistics':
+        """Create from dictionary."""
+        return cls(**data)
 
 
 @dataclass
@@ -85,6 +166,17 @@ class ScheduleConfig:
     notify_on_success: bool = False
     notify_on_failure: bool = True
     notification_email: str = ""
+    
+    # Execution tracking
+    last_execution_time: Optional[float] = None
+    last_execution_status: Optional[ExecutionStatus] = None
+    execution_count: int = 0
+    success_count: int = 0
+    failure_count: int = 0
+    suspended: bool = False
+    suspend_reason: str = ""
+    current_execution_id: Optional[str] = None
+    current_pid: Optional[int] = None
     
     def __post_init__(self):
         """Initialize default values after dataclass creation."""
@@ -552,6 +644,7 @@ class SchedulingEngine:
         self.script_path = Path(script_path)
         self.schedule_manager = ScheduleManager(config_dir)
         self.cron_manager = CronManager(script_path)
+        self.monitor = ScheduleMonitor(config_dir)
     
     def create_and_install_schedule(self, schedule: ScheduleConfig) -> bool:
         """Create a schedule and install it as a cron job."""
@@ -812,6 +905,211 @@ class ConditionalScheduler:
             return current_time + timedelta(hours=24)
         
         return None
+
+
+class ScheduleMonitor:
+    """Monitors and controls schedule execution with logging and emergency controls."""
+    
+    def __init__(self, config_dir: Union[str, Path] = "./schedules"):
+        self.config_dir = Path(config_dir)
+        self.executions_dir = self.config_dir / "executions"
+        self.executions_dir.mkdir(parents=True, exist_ok=True)
+        self.running_executions: Dict[str, ScheduleExecution] = {}
+        
+    def start_execution(self, schedule_id: str, pid: Optional[int] = None) -> ScheduleExecution:
+        """Start tracking a new schedule execution."""
+        execution = ScheduleExecution(
+            execution_id="",
+            schedule_id=schedule_id,
+            start_time=time.time(),
+            status=ExecutionStatus.RUNNING,
+            pid=pid
+        )
+        
+        # Store running execution
+        self.running_executions[execution.execution_id] = execution
+        
+        # Save execution record
+        self._save_execution(execution)
+        
+        logging.info(f"Started execution {execution.execution_id} for schedule {schedule_id}")
+        return execution
+    
+    def complete_execution(self, execution_id: str, exit_code: int = 0, 
+                          files_moved: int = 0, bytes_moved: int = 0, 
+                          error_message: str = "") -> bool:
+        """Mark an execution as completed."""
+        if execution_id not in self.running_executions:
+            logging.warning(f"Execution {execution_id} not found in running executions")
+            return False
+        
+        execution = self.running_executions[execution_id]
+        execution.end_time = time.time()
+        execution.duration_seconds = execution.end_time - execution.start_time
+        execution.exit_code = exit_code
+        execution.files_moved = files_moved
+        execution.bytes_moved = bytes_moved
+        execution.error_message = error_message
+        
+        # Determine status based on exit code
+        if exit_code == 0:
+            execution.status = ExecutionStatus.COMPLETED
+        else:
+            execution.status = ExecutionStatus.FAILED
+        
+        # Remove from running executions
+        del self.running_executions[execution_id]
+        
+        # Save final execution record
+        self._save_execution(execution)
+        
+        logging.info(f"Completed execution {execution_id} with status {execution.status.value}")
+        return True
+    
+    def cancel_execution(self, execution_id: str, reason: str = "User cancelled") -> bool:
+        """Cancel a running execution."""
+        if execution_id not in self.running_executions:
+            logging.warning(f"Execution {execution_id} not found in running executions")
+            return False
+        
+        execution = self.running_executions[execution_id]
+        
+        # Try to kill the process if PID is available
+        if execution.pid:
+            try:
+                os.kill(execution.pid, signal.SIGTERM)
+                logging.info(f"Sent SIGTERM to process {execution.pid}")
+                
+                # Wait a bit, then force kill if still running
+                time.sleep(5)
+                try:
+                    os.kill(execution.pid, signal.SIGKILL)
+                    logging.info(f"Sent SIGKILL to process {execution.pid}")
+                except ProcessLookupError:
+                    pass  # Process already terminated
+            except ProcessLookupError:
+                logging.info(f"Process {execution.pid} already terminated")
+            except PermissionError:
+                logging.error(f"Permission denied to kill process {execution.pid}")
+                return False
+        
+        # Update execution record
+        execution.end_time = time.time()
+        execution.duration_seconds = execution.end_time - execution.start_time
+        execution.status = ExecutionStatus.CANCELLED
+        execution.error_message = reason
+        
+        # Remove from running executions
+        del self.running_executions[execution_id]
+        
+        # Save execution record
+        self._save_execution(execution)
+        
+        logging.info(f"Cancelled execution {execution_id}: {reason}")
+        return True
+    
+    def suspend_schedule(self, schedule_id: str, reason: str = "Manual suspension") -> bool:
+        """Suspend a schedule and cancel any running execution."""
+        # Find and cancel any running executions for this schedule
+        for execution_id, execution in list(self.running_executions.items()):
+            if execution.schedule_id == schedule_id:
+                self.cancel_execution(execution_id, f"Schedule suspended: {reason}")
+        
+        logging.info(f"Suspended schedule {schedule_id}: {reason}")
+        return True
+    
+    def resume_schedule(self, schedule_id: str) -> bool:
+        """Resume a suspended schedule."""
+        logging.info(f"Resumed schedule {schedule_id}")
+        return True
+    
+    def get_running_executions(self) -> List[ScheduleExecution]:
+        """Get all currently running executions."""
+        return list(self.running_executions.values())
+    
+    def get_execution_history(self, schedule_id: Optional[str] = None, limit: int = 50) -> List[ScheduleExecution]:
+        """Get execution history, optionally filtered by schedule ID."""
+        executions = []
+        
+        for execution_file in sorted(self.executions_dir.glob("*.json"), reverse=True):
+            if len(executions) >= limit:
+                break
+                
+            try:
+                with open(execution_file, 'r') as f:
+                    execution_data = json.load(f)
+                execution = ScheduleExecution.from_dict(execution_data)
+                
+                if schedule_id is None or execution.schedule_id == schedule_id:
+                    executions.append(execution)
+            except Exception as e:
+                logging.warning(f"Failed to load execution from {execution_file}: {e}")
+        
+        return executions
+    
+    def get_schedule_statistics(self, schedule_id: str) -> ScheduleStatistics:
+        """Get statistics for a specific schedule."""
+        executions = self.get_execution_history(schedule_id, limit=1000)
+        
+        stats = ScheduleStatistics(schedule_id=schedule_id)
+        total_duration = 0.0
+        
+        for execution in executions:
+            stats.total_executions += 1
+            stats.total_files_moved += execution.files_moved
+            stats.total_bytes_moved += execution.bytes_moved
+            
+            if execution.status == ExecutionStatus.COMPLETED:
+                stats.successful_executions += 1
+                if stats.last_success_time is None or execution.start_time > stats.last_success_time:
+                    stats.last_success_time = execution.start_time
+            elif execution.status == ExecutionStatus.FAILED:
+                stats.failed_executions += 1
+                if stats.last_failure_time is None or execution.start_time > stats.last_failure_time:
+                    stats.last_failure_time = execution.start_time
+            elif execution.status == ExecutionStatus.CANCELLED:
+                stats.cancelled_executions += 1
+            
+            if stats.last_execution_time is None or execution.start_time > stats.last_execution_time:
+                stats.last_execution_time = execution.start_time
+            
+            if execution.duration_seconds > 0:
+                total_duration += execution.duration_seconds
+        
+        if stats.total_executions > 0:
+            stats.average_duration_seconds = total_duration / stats.total_executions
+        
+        return stats
+    
+    def cleanup_old_executions(self, days_to_keep: int = 30) -> int:
+        """Clean up execution records older than specified days."""
+        cutoff_time = time.time() - (days_to_keep * 24 * 60 * 60)
+        removed_count = 0
+        
+        for execution_file in self.executions_dir.glob("*.json"):
+            try:
+                with open(execution_file, 'r') as f:
+                    execution_data = json.load(f)
+                
+                if execution_data.get('start_time', 0) < cutoff_time:
+                    execution_file.unlink()
+                    removed_count += 1
+            except Exception as e:
+                logging.warning(f"Failed to process execution file {execution_file}: {e}")
+        
+        logging.info(f"Cleaned up {removed_count} old execution records")
+        return removed_count
+    
+    def _save_execution(self, execution: ScheduleExecution) -> bool:
+        """Save execution record to disk."""
+        try:
+            execution_file = self.executions_dir / f"{execution.execution_id}.json"
+            with open(execution_file, 'w') as f:
+                json.dump(execution.to_dict(), f, indent=2)
+            return True
+        except Exception as e:
+            logging.error(f"Failed to save execution {execution.execution_id}: {e}")
+            return False
 
 
 class ScheduleTemplateManager:

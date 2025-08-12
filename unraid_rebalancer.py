@@ -69,11 +69,13 @@ except ImportError:
 try:
     from scheduler import (
         ScheduleConfig, ScheduleType, TriggerType, ResourceThresholds,
-        CronExpressionValidator, SchedulingEngine
+        CronExpressionValidator, SchedulingEngine, ScheduleMonitor,
+        ExecutionStatus, ScheduleExecution, ScheduleStatistics
     )
 except ImportError:
     ScheduleConfig = None
     SchedulingEngine = None
+    ScheduleMonitor = None
     logging.warning("Scheduling system not available - scheduling features disabled")
     logging.warning("SQLite metrics storage not available - falling back to JSON")
 
@@ -1581,6 +1583,18 @@ def main():
     p.add_argument("--disable-schedule", help="Disable schedule by ID and exit")
     p.add_argument("--sync-schedules", action="store_true", help="Synchronize schedules with cron and exit")
     p.add_argument("--test-schedule", help="Test schedule configuration by ID and exit")
+    
+    # Schedule monitoring and control options
+    p.add_argument("--list-executions", action="store_true", help="List recent schedule executions and exit")
+    p.add_argument("--execution-history", help="Show execution history for specific schedule ID")
+    p.add_argument("--schedule-stats", help="Show statistics for specific schedule ID")
+    p.add_argument("--running-executions", action="store_true", help="Show currently running executions and exit")
+    p.add_argument("--cancel-execution", help="Cancel running execution by ID")
+    p.add_argument("--suspend-schedule", help="Suspend schedule by ID")
+    p.add_argument("--resume-schedule", help="Resume suspended schedule by ID")
+    p.add_argument("--suspend-reason", help="Reason for schedule suspension")
+    p.add_argument("--cleanup-executions", type=int, metavar="DAYS", help="Clean up execution records older than specified days")
+    p.add_argument("--emergency-stop", action="store_true", help="Emergency stop all running schedule executions")
 
     args = p.parse_args()
     
@@ -1998,6 +2012,163 @@ def main():
         else:
             print(f"Failed to create schedule '{args.schedule}'")
             return 1
+    
+    # Handle schedule monitoring and control commands
+    if args.list_executions:
+        if not scheduling_engine or not ScheduleMonitor:
+            print("Schedule monitoring not available")
+            return 1
+        
+        monitor = ScheduleMonitor()
+        executions = monitor.get_running_executions()
+        
+        if not executions:
+            print("No running schedule executions")
+            return 0
+        
+        print("RUNNING SCHEDULE EXECUTIONS:")
+        print("=" * 60)
+        for execution in executions:
+            duration = time.time() - execution.start_time if execution.start_time else 0
+            print(f"Execution ID: {execution.execution_id}")
+            print(f"Schedule: {execution.schedule_id}")
+            print(f"Status: {execution.status.value}")
+            print(f"Started: {datetime.fromtimestamp(execution.start_time).strftime('%Y-%m-%d %H:%M:%S') if execution.start_time else 'Unknown'}")
+            print(f"Duration: {duration:.1f} seconds")
+            if execution.operation_id:
+                print(f"Operation ID: {execution.operation_id}")
+            print("-" * 40)
+        return 0
+    
+    if args.execution_history:
+        if not scheduling_engine or not ScheduleMonitor:
+            print("Schedule monitoring not available")
+            return 1
+        
+        monitor = ScheduleMonitor()
+        history = monitor.get_execution_history(args.execution_history, limit=20)
+        
+        if not history:
+            print(f"No execution history found for schedule '{args.execution_history}'")
+            return 0
+        
+        print(f"EXECUTION HISTORY FOR '{args.execution_history}':")
+        print("=" * 60)
+        for execution in history:
+            duration = (execution.end_time - execution.start_time) if execution.end_time and execution.start_time else None
+            print(f"Execution ID: {execution.execution_id}")
+            print(f"Status: {execution.status.value}")
+            print(f"Started: {datetime.fromtimestamp(execution.start_time).strftime('%Y-%m-%d %H:%M:%S') if execution.start_time else 'Unknown'}")
+            if execution.end_time:
+                print(f"Ended: {datetime.fromtimestamp(execution.end_time).strftime('%Y-%m-%d %H:%M:%S')}")
+            if duration:
+                print(f"Duration: {duration:.1f} seconds")
+            if execution.error_message:
+                print(f"Error: {execution.error_message}")
+            print("-" * 40)
+        return 0
+    
+    if args.schedule_stats:
+        if not scheduling_engine or not ScheduleMonitor:
+            print("Schedule monitoring not available")
+            return 1
+        
+        monitor = ScheduleMonitor()
+        stats = monitor.get_schedule_statistics(args.schedule_stats)
+        
+        if not stats:
+            print(f"No statistics found for schedule '{args.schedule_stats}'")
+            return 0
+        
+        print(f"STATISTICS FOR '{args.schedule_stats}':")
+        print("=" * 50)
+        print(f"Total Executions: {stats.total_executions}")
+        print(f"Successful: {stats.successful_executions}")
+        print(f"Failed: {stats.failed_executions}")
+        print(f"Success Rate: {stats.success_rate:.1f}%")
+        if stats.average_duration:
+            print(f"Average Duration: {stats.average_duration:.1f} seconds")
+        if stats.last_execution_time:
+            print(f"Last Execution: {datetime.fromtimestamp(stats.last_execution_time).strftime('%Y-%m-%d %H:%M:%S')}")
+        if stats.last_success_time:
+            print(f"Last Success: {datetime.fromtimestamp(stats.last_success_time).strftime('%Y-%m-%d %H:%M:%S')}")
+        return 0
+    
+    if args.cancel_execution:
+        if not scheduling_engine or not ScheduleMonitor:
+            print("Schedule monitoring not available")
+            return 1
+        
+        monitor = ScheduleMonitor()
+        if monitor.cancel_execution(args.cancel_execution):
+            print(f"Execution '{args.cancel_execution}' cancelled successfully")
+            return 0
+        else:
+            print(f"Failed to cancel execution '{args.cancel_execution}'")
+            return 1
+    
+    if args.suspend_schedule:
+        if not scheduling_engine or not ScheduleMonitor:
+            print("Schedule monitoring not available")
+            return 1
+        
+        monitor = ScheduleMonitor()
+        reason = args.suspend_reason or "Manual suspension"
+        if monitor.suspend_schedule(args.suspend_schedule, reason):
+            print(f"Schedule '{args.suspend_schedule}' suspended successfully")
+            print(f"Reason: {reason}")
+            return 0
+        else:
+            print(f"Failed to suspend schedule '{args.suspend_schedule}'")
+            return 1
+    
+    if args.resume_schedule:
+        if not scheduling_engine or not ScheduleMonitor:
+            print("Schedule monitoring not available")
+            return 1
+        
+        monitor = ScheduleMonitor()
+        if monitor.resume_schedule(args.resume_schedule):
+            print(f"Schedule '{args.resume_schedule}' resumed successfully")
+            return 0
+        else:
+            print(f"Failed to resume schedule '{args.resume_schedule}'")
+            return 1
+    
+    if args.cleanup_executions:
+        if not scheduling_engine or not ScheduleMonitor:
+            print("Schedule monitoring not available")
+            return 1
+        
+        monitor = ScheduleMonitor()
+        days = args.cleanup_executions
+        cleaned = monitor.cleanup_old_executions(days)
+        print(f"Cleaned up {cleaned} execution records older than {days} days")
+        return 0
+    
+    if args.emergency_stop:
+        if not scheduling_engine or not ScheduleMonitor:
+            print("Schedule monitoring not available")
+            return 1
+        
+        monitor = ScheduleMonitor()
+        running_executions = monitor.get_running_executions()
+        
+        if not running_executions:
+            print("No running executions to stop")
+            return 0
+        
+        print(f"EMERGENCY STOP: Cancelling {len(running_executions)} running executions...")
+        cancelled = 0
+        for execution in running_executions:
+            if monitor.cancel_execution(execution.execution_id):
+                cancelled += 1
+                print(f"Cancelled execution {execution.execution_id} (schedule: {execution.schedule_id})")
+            else:
+                print(f"Failed to cancel execution {execution.execution_id}")
+        
+        print(f"Emergency stop completed: {cancelled}/{len(running_executions)} executions cancelled")
+        return 0
     
     # Handle metrics-only commands that don't require disk scanning
     if args.export_metrics:
