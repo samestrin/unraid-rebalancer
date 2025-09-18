@@ -1,8 +1,19 @@
 # Unraid Rebalancer
 
-![Version 0.0.2](https://img.shields.io/badge/Version-0.0.2-blue) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) [![Built with Python](https://img.shields.io/badge/Built%20with-Python-green)](https://www.python.org/)
+![Version 1.0](https://img.shields.io/badge/Version-1.0-blue) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) [![Built with Python](https://img.shields.io/badge/Built%20with-Python-green)](https://www.python.org/) ![Atomic Operations](https://img.shields.io/badge/Atomic%20Operations-✓-green) ![Enhanced Safety](https://img.shields.io/badge/Enhanced%20Safety-✓-green)
 
-An intelligent disk rebalancing tool for Unraid servers that redistributes data across drives to optimize storage utilization and balance fill levels.
+An intelligent disk rebalancing tool for Unraid servers that redistributes data across drives to optimize storage utilization and balance fill levels. **Now with atomic operations for enhanced data safety and improved user experience.**
+
+## 🚀 Latest Improvements (v1.0)
+
+- **🔒 Atomic Operations**: Eliminates data consistency risks with single-command transfers
+- **⚡ Enhanced Performance Modes**: Standardized rsync configurations for all CPU types
+- **🛡️ Advanced Error Handling**: Intelligent error recovery with comprehensive logging
+- **📊 Universal Progress Reporting**: Real-time progress across all performance modes
+- **✅ Comprehensive Validation**: Pre-transfer validation and post-transfer verification
+- **🔄 100% Backward Compatible**: All existing configurations continue to work
+
+[📖 Read the full improvement documentation](docs/rsync_improvements.md)
 
 ## Features
 
