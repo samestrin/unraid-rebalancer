@@ -1459,10 +1459,77 @@ def perform_plan(plan: Plan, execute: bool, rsync_extra: List[str], allow_merge:
         if monitor:
             transfer = monitor.start_transfer(m.unit, m.dest_disk)
         
+        # Pre-transfer validation
+        validation_passed = True
+        validation_warnings = []
+
+        # Basic validation checks
+        if not src.exists():
+            print(f"[ERROR] Source path does not exist: {src}")
+            logging.error(f"Source validation failed: {src}")
+            failures += 1
+            if transfer:
+                monitor.complete_transfer(transfer, False, "Source path does not exist")
+            continue
+
         # Ensure parent exists on destination
+        dst_parent = dst.parent
+        if not dst_parent.exists():
+            if execute:
+                try:
+                    dst_parent.mkdir(parents=True, exist_ok=True)
+                    logging.info(f"Created destination parent directory: {dst_parent}")
+                except Exception as e:
+                    print(f"[ERROR] Failed to create destination parent directory: {e}")
+                    logging.error(f"Destination parent creation failed: {e}")
+                    failures += 1
+                    if transfer:
+                        monitor.complete_transfer(transfer, False, f"Failed to create destination parent: {e}")
+                    continue
+
+        # Check disk space (simplified)
         if execute:
-            dst_parent = dst.parent
-            dst_parent.mkdir(parents=True, exist_ok=True)
+            try:
+                import shutil
+                source_size = 0
+                if src.is_file():
+                    source_size = src.stat().st_size
+                elif src.is_dir():
+                    source_size = sum(f.stat().st_size for f in src.rglob('*') if f.is_file())
+
+                dest_usage = shutil.disk_usage(dst_parent)
+                available_space = dest_usage.free
+
+                if source_size > 0 and available_space < source_size * 1.1:  # 10% buffer
+                    print(f"[ERROR] Insufficient disk space: need {source_size:,} bytes, have {available_space:,} bytes")
+                    logging.error(f"Disk space validation failed: need {source_size}, have {available_space}")
+                    failures += 1
+                    if transfer:
+                        monitor.complete_transfer(transfer, False, "Insufficient disk space")
+                    continue
+                elif source_size > 0 and available_space < source_size * 2:  # Warning if tight
+                    warning_msg = f"Disk space is tight: {available_space:,} bytes available for {source_size:,} byte transfer"
+                    print(f"[WARNING] {warning_msg}")
+                    logging.warning(warning_msg)
+                    validation_warnings.append(warning_msg)
+
+            except Exception as e:
+                logging.warning(f"Could not check disk space: {e}")
+
+        # Check for same-disk transfer (warning)
+        try:
+            src_parts = str(src).split('/')
+            dst_parts = str(dst).split('/')
+            if len(src_parts) >= 3 and len(dst_parts) >= 3:
+                src_disk = src_parts[2]  # /mnt/disk1/... -> disk1
+                dst_disk = dst_parts[2]  # /mnt/disk2/... -> disk2
+                if src_disk == dst_disk:
+                    warning_msg = f"Source and destination are on same disk: {src_disk}"
+                    print(f"[WARNING] {warning_msg}")
+                    logging.warning(warning_msg)
+                    validation_warnings.append(warning_msg)
+        except Exception:
+            pass
 
         # If destination exists and not allowed to merge, skip
         if dst.exists() and not allow_merge:
@@ -1503,19 +1570,60 @@ def perform_plan(plan: Plan, execute: bool, rsync_extra: List[str], allow_merge:
         print(f"\n[{idx}/{len(plan.moves)}] Moving {m.unit.share}/{m.unit.rel_path} "
               f"from {m.unit.src_disk} -> {m.dest_disk} ({human_bytes(m.unit.size_bytes)}){progress_info}")
 
-        # Execute atomic rsync move
+        # Execute atomic rsync move with enhanced error handling
         rc = run(cmd, dry_run=not execute)
 
         if rc != 0:
-            error_msg = f"Atomic rsync returned {rc}"
-            print(f"[ERROR] {error_msg}")
+            # Enhanced error handling with detailed categorization
+            error_msg = f"Atomic rsync failed with return code {rc}"
+
+            # Log detailed error information
+            logging.error(f"Rsync command failed: {' '.join(cmd)}")
+            logging.error(f"Return code: {rc}")
+
+            # Categorize error severity
+            if rc in [1, 2, 4, 5, 6, 22]:  # Configuration/critical errors
+                print(f"[CRITICAL ERROR] {error_msg} - Non-recoverable rsync error")
+                logging.critical(f"Non-recoverable rsync error {rc} for {src} -> {dst}")
+            elif rc in [23, 24]:  # Partial transfer errors
+                print(f"[WARNING] {error_msg} - Partial transfer, may retry")
+                logging.warning(f"Partial transfer error {rc} for {src} -> {dst}")
+            else:  # Other errors
+                print(f"[ERROR] {error_msg}")
+                logging.error(f"Rsync error {rc} for {src} -> {dst}")
+
+            # Check for specific error conditions and attempt recovery
+            if rc == 23:  # Partial transfer due to error
+                logging.info("Partial transfer detected - destination may contain partial data")
+                # In dry-run mode, this is expected and not an error
+                if not execute:
+                    logging.debug("Partial transfer in dry-run mode is normal")
+            elif rc == 24:  # Partial transfer due to vanished source files
+                logging.warning("Source files vanished during transfer - checking source state")
+                if not src.exists():
+                    logging.error(f"Source path no longer exists: {src}")
+
             failures += 1
             if transfer:
                 monitor.complete_transfer(transfer, False, error_msg)
             continue
 
-        # Atomic operation complete - no separate cleanup needed
+        # Atomic operation completed successfully
         # The --remove-source-files flag ensures source is removed after successful transfer
+        logging.info(f"Successfully completed atomic transfer: {src} -> {dst}")
+
+        # Verify atomic transfer completion (only in execute mode)
+        if execute:
+            if not src.exists() and dst.exists():
+                logging.debug(f"Atomic transfer verification passed: source removed, destination exists")
+            elif src.exists() and dst.exists():
+                logging.warning(f"Source still exists after atomic transfer - may be partial: {src}")
+            elif not dst.exists():
+                logging.error(f"Destination does not exist after atomic transfer: {dst}")
+                failures += 1
+                if transfer:
+                    monitor.complete_transfer(transfer, False, "Destination verification failed")
+                continue
         
         # Mark transfer as completed successfully
         if transfer:
