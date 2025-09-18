@@ -1540,11 +1540,12 @@ def perform_plan(plan: Plan, execute: bool, rsync_extra: List[str], allow_merge:
 
         # rsync path handling
         if src.is_dir():
-            # For directories, we want to move the entire directory, not just its contents
-            # So we use the source directory without trailing slash and ensure the parent exists
+            # For directories, use the parent directory as destination to avoid nesting issues
+            # This ensures 'rsync source_dir parent_dir/' moves source_dir into parent_dir/
             src_r = str(src)
-            dst_r = str(dst)
+            dst_r = str(dst.parent) + "/"  # Trailing slash ensures it's treated as directory
         else:
+            # For files, use the exact destination path
             src_r = str(src)
             dst_r = str(dst)
 
