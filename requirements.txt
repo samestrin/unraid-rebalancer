@@ -1,6 +1,6 @@
 # Unraid Rebalancer Requirements
 # External dependencies for performance monitoring
-psutil>=5.8.0
+psutil>=5.8.0,<8.0.0
 
 # Python 3.8+ is required for:
 # - dataclasses (Python 3.7+)
