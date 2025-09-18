@@ -115,16 +115,22 @@ SIZE_UNITS = {
 # Rsync performance modes for different CPU capabilities
 RSYNC_MODES = {
     "fast": {
-        "flags": ["-av", "--partial", "--inplace", "--numeric-ids", "--no-compress"],
-        "description": "Fastest transfers, minimal CPU overhead (recommended for lower-end CPUs)"
+        "flags": ["-av", "--partial", "--inplace", "--numeric-ids", "--no-compress", "--info=progress2"],
+        "description": "Fastest transfers, minimal CPU overhead with progress reporting",
+        "features": ["basic_archive", "no_compression", "progress_reporting", "minimal_cpu"],
+        "target_hardware": "Lower-end CPUs, slower storage"
     },
     "balanced": {
-        "flags": ["-avPR", "-X", "--partial", "--inplace", "--numeric-ids"],
-        "description": "Balanced speed and features with extended attributes (good for mid-range CPUs)"
+        "flags": ["-av", "-X", "--partial", "--inplace", "--numeric-ids", "--info=progress2"],
+        "description": "Balanced speed and features with extended attributes",
+        "features": ["extended_attrs", "progress_reporting", "moderate_features", "mid_range_cpu"],
+        "target_hardware": "Mid-range CPUs, mixed storage types"
     },
     "integrity": {
-        "flags": ["-aHAX", "--info=progress2", "--partial", "--inplace", "--numeric-ids"],
-        "description": "Full integrity checking with hard links, ACLs, and progress (for high-end CPUs)"
+        "flags": ["-aHAX", "--partial", "--inplace", "--numeric-ids", "--info=progress2", "--checksum"],
+        "description": "Maximum integrity checking with hard links, ACLs, and checksums",
+        "features": ["hard_links", "acls", "extended_attrs", "checksum_verification", "detailed_progress", "maximum_integrity"],
+        "target_hardware": "High-end CPUs, fast storage, integrity-critical operations"
     }
 }
 
@@ -1475,8 +1481,12 @@ def perform_plan(plan: Plan, execute: bool, rsync_extra: List[str], allow_merge:
             src_r = str(src)
             dst_r = str(dst)
 
+        # Use atomic rsync operation with --remove-source-files
         rsync_flags = get_rsync_flags(rsync_mode)
-        cmd = ["rsync"] + rsync_flags + rsync_extra + [src_r, dst_r]
+
+        # Add --remove-source-files for atomic move operation
+        atomic_flags = rsync_flags + ["--remove-source-files"]
+        cmd = ["rsync"] + atomic_flags + rsync_extra + [src_r, dst_r]
 
         # Display progress information
         progress_info = ""
@@ -1485,52 +1495,27 @@ def perform_plan(plan: Plan, execute: bool, rsync_extra: List[str], allow_merge:
             progress_info = (f" | Progress: {progress['progress_percent']:.1f}% "
                            f"| Rate: {progress['current_transfer_rate_mbps']:.1f} MB/s "
                            f"| CPU: {progress['current_cpu_percent']:.1f}%")
-            
+
             if progress['eta_seconds']:
                 eta_mins = int(progress['eta_seconds'] / 60)
                 progress_info += f" | ETA: {eta_mins}m"
 
         print(f"\n[{idx}/{len(plan.moves)}] Moving {m.unit.share}/{m.unit.rel_path} "
               f"from {m.unit.src_disk} -> {m.dest_disk} ({human_bytes(m.unit.size_bytes)}){progress_info}")
-        
+
+        # Execute atomic rsync move
         rc = run(cmd, dry_run=not execute)
-        
+
         if rc != 0:
-            error_msg = f"rsync returned {rc}"
+            error_msg = f"Atomic rsync returned {rc}"
             print(f"[ERROR] {error_msg}")
             failures += 1
             if transfer:
                 monitor.complete_transfer(transfer, False, error_msg)
             continue
 
-        if execute:
-            # After successful copy, remove source files
-            if src.is_dir():
-                # Remove files that have been copied; then clean up empty dirs
-                # Use trailing slash on source to remove contents, not the directory itself
-                rm_cmd = ["rsync", "-aHAX", "--remove-source-files", str(src) + "/", str(dst) + "/"]
-                rc2 = run(rm_cmd, dry_run=False)
-                if rc2 != 0:
-                    print(f"[WARN] cleanup rsync returned {rc2}")
-                    logging.warning(f"Failed to remove source files from {src}")
-                
-                # Remove empty directories
-                try:
-                    for root, _, files in os.walk(src, topdown=False):
-                        if not files:
-                            try:
-                                os.rmdir(root)
-                            except OSError:
-                                pass  # Directory not empty or permission error
-                except Exception:
-                    logging.warning(f"Error during directory cleanup for {src}")
-            else:
-                try:
-                    os.remove(src)
-                except FileNotFoundError:
-                    logging.debug(f"Source file {src} already removed")
-                except Exception as e:
-                    logging.error(f"Failed to remove source file {src}: {e}")
+        # Atomic operation complete - no separate cleanup needed
+        # The --remove-source-files flag ensures source is removed after successful transfer
         
         # Mark transfer as completed successfully
         if transfer:
@@ -1655,8 +1640,11 @@ def main():
         print("Available rsync performance modes:\n")
         for mode, config in RSYNC_MODES.items():
             flags_str = " ".join(config["flags"])
+            features_str = ", ".join(config.get("features", []))
             print(f"  {mode:>9}: {config['description']}")
-            print(f"           Flags: {flags_str}\n")
+            print(f"           Flags: {flags_str}")
+            print(f"           Features: {features_str}")
+            print(f"           Target: {config.get('target_hardware', 'General purpose')}\n")
         return 0
     
     # Set up metrics directory and database
