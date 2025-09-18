@@ -18,48 +18,151 @@ This document provides technical details about the implementation of the Unraid 
 
 ### System Components
 
-The scheduling system consists of several interconnected components:
+The scheduling system consists of several interconnected components using a hybrid architecture:
 
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│  CLI Interface  │────│ Scheduling      │────│ Execution       │
-│                 │    │ Engine          │    │ Engine          │
+│  CLI Interface  │────│ Scheduling      │────│ Threading       │
+│                 │    │ Engine          │    │ Execution       │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
          │                       │                       │
          │                       │                       │
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│ Configuration   │    │ Resource        │    │ Notification    │
-│ Manager         │    │ Monitor         │    │ Manager         │
+│ Cron Manager    │    │ Resource        │    │ Error Recovery  │
+│ (System Cron)   │    │ Monitor         │    │ Manager         │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
          │                       │                       │
          │                       │                       │
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│ Persistence     │    │ Health Monitor  │    │ Unraid          │
-│ Layer           │    │                 │    │ Integration     │
+│ Schedule        │    │ Health Monitor  │    │ Notification    │
+│ Monitor         │    │                 │    │ Manager         │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
 ```
+
+### Hybrid Architecture
+
+The system uses a **hybrid scheduling approach**:
+- **Cron Integration**: System crontab for time-based schedule triggers
+- **Threading Layer**: Python threading for retries, concurrent execution, and background monitoring
+- **Resource Awareness**: Conditional scheduling based on system resource thresholds
 
 ### Core Classes
 
 #### SchedulingEngine
 - **Purpose**: Central orchestrator for all scheduling operations
-- **Responsibilities**: Schedule CRUD operations, execution coordination
-- **Key Methods**: `create_schedule()`, `execute_schedule()`, `manage_lifecycle()`
+- **Responsibilities**: Schedule CRUD operations, cron integration, execution coordination
+- **Key Methods**: `create_and_install_schedule()`, `update_and_reinstall_schedule()`, `sync_schedules()`
 
 #### ScheduleConfig
-- **Purpose**: Immutable configuration object for schedules
-- **Responsibilities**: Validation, serialization, parameter management
-- **Key Properties**: `cron_expression`, `command`, `resource_limits`
+- **Purpose**: Comprehensive configuration dataclass for schedules
+- **Responsibilities**: Schedule definition, validation, rebalancer parameters
+- **Key Properties**: `cron_expression`, `schedule_type`, `trigger_type`, `target_percent`, `rsync_mode`, `resource_thresholds`
+- **Schedule Types**: `ONE_TIME`, `RECURRING`, `CONDITIONAL`
+- **Trigger Types**: `TIME_BASED`, `RESOURCE_BASED`, `DISK_USAGE`, `SYSTEM_IDLE`
 
-#### ResourceMonitor
+#### SystemResourceMonitor
 - **Purpose**: System resource monitoring and threshold management
-- **Responsibilities**: CPU/memory/IO monitoring, adaptive scheduling
-- **Key Methods**: `get_current_usage()`, `check_thresholds()`, `predict_load()`
+- **Responsibilities**: CPU/memory/IO monitoring, idle time detection
+- **Key Methods**: `get_current_usage()`, `check_resource_thresholds()`, `get_idle_time_minutes()`
 
-#### ExecutionEngine
-- **Purpose**: Schedule execution and process management
-- **Responsibilities**: Process spawning, timeout handling, output capture
-- **Key Methods**: `execute_command()`, `monitor_execution()`, `handle_timeout()`
+#### ErrorRecoveryManager
+- **Purpose**: Handle execution failures and retry logic using threading
+- **Responsibilities**: Failure classification, retry scheduling, schedule suspension
+- **Key Methods**: `handle_execution_failure()`, `_schedule_retry()`, `_execute_retry()`
+- **Threading**: Uses daemon threads for retry execution with configurable backoff strategies
+
+#### ScheduleMonitor
+- **Purpose**: Track schedule executions and maintain execution history
+- **Responsibilities**: Execution lifecycle management, statistics tracking
+- **Key Methods**: `start_execution()`, `complete_execution()`, `get_running_executions()`
+
+## Threading Implementation
+
+### Retry Execution Threading
+
+The system uses Python threading for retry execution and background operations:
+
+```python
+class ErrorRecoveryManager:
+    """Handle execution failures with threading-based retries."""
+    
+    def _schedule_retry(self, execution: ScheduleExecution, schedule: ScheduleConfig,
+                       retry_config: RetryConfig) -> bool:
+        """Schedule execution retry using daemon thread."""
+        try:
+            # Calculate retry delay
+            delay = retry_config.calculate_delay(execution.retry_attempt)
+            next_retry_time = time.time() + delay
+            
+            # Update execution for retry
+            execution.retry_attempt += 1
+            execution.next_retry_time = next_retry_time
+            execution.status = ExecutionStatus.RETRYING
+            
+            # Schedule retry using threading
+            retry_thread = threading.Thread(
+                target=self._execute_retry,
+                args=(execution, schedule, delay),
+                daemon=True  # Daemon thread for automatic cleanup
+            )
+            retry_thread.start()
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Failed to schedule retry: {e}")
+            return False
+    
+    def _execute_retry(self, execution: ScheduleExecution, schedule: ScheduleConfig, delay: int):
+        """Execute retry after delay in separate thread."""
+        try:
+            # Wait for retry delay
+            time.sleep(delay)
+            
+            # Create new execution for retry
+            new_execution = self.monitor.start_execution(
+                schedule.schedule_id,
+                pid=None
+            )
+            
+            # Copy retry information
+            new_execution.retry_attempt = execution.retry_attempt
+            new_execution.max_retries = execution.max_retries
+            
+            # Execute the rebalancing operation
+            self.logger.info(f"Executing retry for schedule {schedule.schedule_id}")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to execute retry: {e}")
+```
+
+### Background System Monitoring
+
+The main rebalancer also uses threading for background system monitoring:
+
+```python
+class UnraidRebalancer:
+    """Main rebalancer with background monitoring."""
+    
+    def start_monitoring(self):
+        """Start background system monitoring."""
+        if not self.metrics_enabled or self._monitoring_thread:
+            return
+        
+        self._stop_monitoring.clear()
+        self._monitoring_thread = threading.Thread(
+            target=self._monitor_system, 
+            daemon=True
+        )
+        self._monitoring_thread.start()
+```
+
+### Thread Safety Considerations
+
+- **Daemon Threads**: All background threads are marked as daemon threads for automatic cleanup
+- **Thread Isolation**: Each retry execution runs in its own thread to prevent blocking
+- **Resource Management**: Threads are designed to be short-lived and self-cleaning
+- **Concurrent Execution**: Multiple schedules can execute concurrently through threading
 
 ## Cron Integration Implementation
 
@@ -157,46 +260,74 @@ class CronSchedule:
 For system-level cron integration:
 
 ```python
-class CrontabManager:
+class CronManager:
     """Manage system crontab entries."""
+    
+    def __init__(self, script_path: Union[str, Path]):
+        """Initialize with path to rebalancer script."""
+        self.script_path = Path(script_path).resolve()
+        self.logger = logging.getLogger(__name__)
     
     def install_schedule(self, schedule: ScheduleConfig) -> bool:
         """Install schedule in system crontab."""
         try:
+            # Validate cron expression
+            if not CronExpressionValidator.validate_cron_expression(schedule.cron_expression):
+                self.logger.error(f"Invalid cron expression: {schedule.cron_expression}")
+                return False
+            
             # Get current crontab
             current_crontab = self._get_current_crontab()
             
             # Remove existing entry for this schedule
-            filtered_crontab = self._remove_schedule_entry(
-                current_crontab, schedule.name
-            )
+            filtered_crontab = [line for line in current_crontab 
+                              if not line.strip().endswith(f"# {schedule.schedule_id}")]
             
             # Add new entry
-            new_entry = self._create_crontab_entry(schedule)
+            new_entry = self._generate_cron_command(schedule)
             updated_crontab = filtered_crontab + [new_entry]
             
             # Install updated crontab
             return self._install_crontab(updated_crontab)
             
         except Exception as e:
-            logger.error(f"Failed to install schedule {schedule.name}: {e}")
+            self.logger.error(f"Failed to install schedule {schedule.schedule_id}: {e}")
             return False
     
-    def _create_crontab_entry(self, schedule: ScheduleConfig) -> str:
-        """Create crontab entry for schedule."""
-        command_parts = [
+    def _generate_cron_command(self, schedule: ScheduleConfig) -> str:
+        """Generate cron command for schedule."""
+        # Build command arguments
+        cmd_args = [
             'python3',
-            '/path/to/unraid_rebalancer.py',
-            '--execute-schedule',
-            f'"{schedule.name}"',
-            '>>',
-            f'/var/log/unraid-rebalancer/{schedule.name}.log',
-            '2>&1'
+            str(self.script_path),
+            '--execute-schedule-id',
+            schedule.schedule_id
         ]
         
-        command = ' '.join(command_parts)
+        # Add rebalancer-specific arguments
+        if schedule.target_percent != 80.0:
+            cmd_args.extend(['--target-percent', str(schedule.target_percent)])
         
-        return f"{schedule.cron_expression} {command} # {schedule.name}"
+        if schedule.rsync_mode != 'balanced':
+            cmd_args.extend(['--rsync-mode', schedule.rsync_mode])
+        
+        if schedule.min_unit_size != 1073741824:
+            cmd_args.extend(['--min-unit-size', str(schedule.min_unit_size)])
+        
+        if schedule.include_disks:
+            cmd_args.extend(['--include-disks'] + schedule.include_disks)
+        
+        if schedule.exclude_disks:
+            cmd_args.extend(['--exclude-disks'] + schedule.exclude_disks)
+        
+        # Add logging redirection
+        log_dir = Path('/var/log/unraid-rebalancer')
+        log_file = log_dir / f'{schedule.schedule_id}.log'
+        
+        command = ' '.join(cmd_args)
+        command += f' >> {log_file} 2>&1'
+        
+        return f"{schedule.cron_expression} {command} # {schedule.schedule_id}"
     
     def _install_crontab(self, entries: List[str]) -> bool:
         """Install crontab entries."""

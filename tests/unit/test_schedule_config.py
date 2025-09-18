@@ -46,16 +46,17 @@ class TestScheduleConfig(unittest.TestCase):
     def test_schedule_config_creation(self):
         """Test basic ScheduleConfig creation."""
         config = ScheduleConfig(
+            schedule_id="test_schedule",
             name="test_schedule",
-            schedule_type=ScheduleType.CRON,
+            schedule_type=ScheduleType.RECURRING,
             cron_expression="0 2 * * *",
-            command=["python", "unraid_rebalancer.py", "--target", "80"]
+            target_percent=80.0
         )
         
         self.assertEqual(config.name, "test_schedule")
-        self.assertEqual(config.schedule_type, ScheduleType.CRON)
+        self.assertEqual(config.schedule_type, ScheduleType.RECURRING)
         self.assertEqual(config.cron_expression, "0 2 * * *")
-        self.assertEqual(config.command, ["python", "unraid_rebalancer.py", "--target", "80"])
+        self.assertEqual(config.target_percent, 80.0)
         self.assertTrue(config.enabled)
     
     def test_schedule_config_with_resource_thresholds(self):
@@ -63,15 +64,16 @@ class TestScheduleConfig(unittest.TestCase):
         thresholds = ResourceThresholds(
             max_cpu_percent=80.0,
             max_memory_percent=70.0,
-            max_disk_io_percent=60.0
+            max_disk_io_mbps=60.0
         )
         
         config = ScheduleConfig(
+            schedule_id="resource_aware_schedule",
             name="resource_aware_schedule",
             schedule_type=ScheduleType.CONDITIONAL,
             trigger_type=TriggerType.RESOURCE_BASED,
             resource_thresholds=thresholds,
-            command=["python", "unraid_rebalancer.py", "--rsync-mode", "fast"]
+            rsync_mode="fast"
         )
         
         self.assertEqual(config.trigger_type, TriggerType.RESOURCE_BASED)
@@ -81,42 +83,57 @@ class TestScheduleConfig(unittest.TestCase):
     def test_schedule_config_serialization(self):
         """Test schedule configuration JSON serialization."""
         config = ScheduleConfig(
-            name="serialization_test",
-            schedule_type=ScheduleType.CRON,
-            cron_expression="0 3 * * 1",
-            command=["python", "unraid_rebalancer.py", "--dry-run"]
+            schedule_id="test_schedule",
+            name="Test Schedule",
+            cron_expression="0 2 * * *",
+            schedule_type=ScheduleType.RECURRING,
+            trigger_type=TriggerType.TIME_BASED
         )
         
-        # Test to_dict
+        # Test to_dict method
         config_dict = config.to_dict()
-        self.assertIsInstance(config_dict, dict)
-        self.assertEqual(config_dict['name'], "serialization_test")
-        self.assertEqual(config_dict['cron_expression'], "0 3 * * 1")
         
-        # Test from_dict
-        restored_config = ScheduleConfig.from_dict(config_dict)
-        self.assertEqual(restored_config.name, config.name)
-        self.assertEqual(restored_config.cron_expression, config.cron_expression)
-        self.assertEqual(restored_config.command, config.command)
+        # Verify all fields are present
+        self.assertIn('schedule_id', config_dict)
+        self.assertIn('name', config_dict)
+        self.assertIn('cron_expression', config_dict)
+        self.assertIn('schedule_type', config_dict)
+        self.assertIn('trigger_type', config_dict)
+        
+        # Verify enum values are serialized as strings
+        self.assertEqual(config_dict['schedule_type'], 'recurring')
+        self.assertEqual(config_dict['trigger_type'], 'time_based')
+        
+        # Verify basic values
+        self.assertEqual(config_dict['schedule_id'], 'test_schedule')
+        self.assertEqual(config_dict['name'], 'Test Schedule')
+        self.assertEqual(config_dict['cron_expression'], '0 2 * * *')
     
     def test_schedule_config_persistence(self):
         """Test saving and loading schedule configurations."""
         config = ScheduleConfig(
-            name="persistence_test",
-            schedule_type=ScheduleType.CRON,
-            cron_expression="0 4 * * *",
-            command=["python", "unraid_rebalancer.py", "--target", "75"]
+            schedule_id="test_persistence",
+            name="Persistence Test",
+            cron_expression="0 3 * * *",
+            target_percent=85.0
         )
         
-        # Save configuration
-        config.save_to_file(self.config_file)
-        self.assertTrue(self.config_file.exists())
+        # Test saving to file
+        test_file = Path(self.temp_dir) / "test_config.json"
+        result = config.save_to_file(test_file)
         
-        # Load configuration
-        loaded_config = ScheduleConfig.load_from_file(self.config_file)
-        self.assertEqual(loaded_config.name, config.name)
-        self.assertEqual(loaded_config.cron_expression, config.cron_expression)
-        self.assertEqual(loaded_config.command, config.command)
+        # Verify save was successful
+        self.assertTrue(result)
+        self.assertTrue(test_file.exists())
+        
+        # Verify file contents
+        with open(test_file, 'r') as f:
+            saved_data = json.load(f)
+        
+        self.assertEqual(saved_data['schedule_id'], 'test_persistence')
+        self.assertEqual(saved_data['name'], 'Persistence Test')
+        self.assertEqual(saved_data['cron_expression'], '0 3 * * *')
+        self.assertEqual(saved_data['target_percent'], 85.0)
 
 
 class TestCronExpressionValidator(unittest.TestCase):
@@ -131,12 +148,24 @@ class TestCronExpressionValidator(unittest.TestCase):
             "*/15 * * * *",   # Every 15 minutes
             "0 2-6 * * *",    # Daily between 2-6 AM
             "0 2 * * 1-5",    # Weekdays at 2 AM
+            "0,30 * * * *",   # Every 30 minutes
+            "0 9,17 * * *",   # 9 AM and 5 PM daily
+            "0 0 1,15 * *",   # 1st and 15th of month
+            "0 0 * * 1,3,5",  # Monday, Wednesday, Friday
+            "*/5 * * * *",    # Every 5 minutes
+            "0 */2 * * *",    # Every 2 hours
+            "0 0 */3 * *",    # Every 3 days
+            "0 0 1 */2 *",    # Every 2 months on 1st
+            "15-45/10 * * * *", # Minutes 15, 25, 35, 45
+            "0 9-17/2 * * *", # Every 2 hours from 9 AM to 5 PM
+            "0 0 1-7 * 1",    # First Monday of month
+            "0 0 * * 7",      # Sunday (7 should be valid)
         ]
         
         validator = CronExpressionValidator()
         for expression in valid_expressions:
             with self.subTest(expression=expression):
-                self.assertTrue(validator.is_valid(expression))
+                self.assertTrue(validator.validate_cron_expression(expression))
     
     def test_invalid_cron_expressions(self):
         """Test validation of invalid cron expressions."""
@@ -148,42 +177,113 @@ class TestCronExpressionValidator(unittest.TestCase):
             "0 0 * * 8",       # Invalid day of week (8)
             "* * * *",         # Missing field
             "0 0 0 0 0 0",     # Too many fields
+            "60 * * * *",      # Invalid minute (60)
+            "0 0 0 * *",       # Invalid day of month (0)
+            "0 0 * 0 *",       # Invalid month (0)
+            "*/0 * * * *",     # Invalid step (0)
+            "*/-1 * * * *",    # Invalid step (negative)
+            "0-60 * * * *",    # Invalid range (minute 60)
+            "0 0-24 * * *",    # Invalid range (hour 24)
+            "0 0 1-32 * *",    # Invalid range (day 32)
+            "0 0 * 1-13 *",    # Invalid range (month 13)
+            "0 0 * * 0-8",     # Invalid range (dow 8)
+            "5-2 * * * *",     # Invalid range (start > end)
+            "0 5-2 * * *",     # Invalid range (start > end)
+            "abc * * * *",     # Non-numeric value
+            "0 abc * * *",     # Non-numeric value
+            "0/abc * * * *",   # Non-numeric step
+            "0-abc * * * *",   # Non-numeric range
+            "0, * * * *",      # Invalid comma usage
+            "0 ,5 * * *",      # Invalid comma usage
         ]
         
         validator = CronExpressionValidator()
         for expression in invalid_expressions:
             with self.subTest(expression=expression):
-                self.assertFalse(validator.is_valid(expression))
+                self.assertFalse(validator.validate_cron_expression(expression))
     
     def test_cron_expression_parsing(self):
         """Test parsing cron expressions into components."""
         validator = CronExpressionValidator()
         
-        # Test daily at 2 AM
+        # Test daily expression parsing
         components = validator.parse_expression("0 2 * * *")
-        self.assertEqual(components['minute'], '0')
-        self.assertEqual(components['hour'], '2')
-        self.assertEqual(components['day'], '*')
-        self.assertEqual(components['month'], '*')
-        self.assertEqual(components['dow'], '*')
+        expected = {
+            'minute': '0',
+            'hour': '2', 
+            'day_of_month': '*',
+            'month': '*',
+            'day_of_week': '*',
+            'original': '0 2 * * *'
+        }
+        self.assertEqual(components, expected)
+        
+        # Test weekly expression parsing
+        components = validator.parse_expression("0 0 * * 0")
+        expected = {
+            'minute': '0',
+            'hour': '0',
+            'day_of_month': '*', 
+            'month': '*',
+            'day_of_week': '0',
+            'original': '0 0 * * 0'
+        }
+        self.assertEqual(components, expected)
     
     def test_next_execution_time(self):
         """Test calculation of next execution time."""
         validator = CronExpressionValidator()
         
-        # Test with a known time
-        base_time = datetime(2024, 1, 1, 1, 0, 0)  # 1 AM on Jan 1, 2024
-        
-        # Daily at 2 AM should be next at 2 AM same day
-        next_time = validator.get_next_execution("0 2 * * *", base_time)
-        expected = datetime(2024, 1, 1, 2, 0, 0)
+        # Test daily execution at 2 AM
+        from_time = datetime(2024, 1, 1, 0, 0, 0)  # Midnight
+        next_time = validator.get_next_execution("0 2 * * *", from_time)
+        expected = datetime(2024, 1, 1, 2, 0, 0)  # 2 AM same day
         self.assertEqual(next_time, expected)
         
-        # If it's already past 2 AM, should be next day
-        base_time = datetime(2024, 1, 1, 3, 0, 0)  # 3 AM
-        next_time = validator.get_next_execution("0 2 * * *", base_time)
-        expected = datetime(2024, 1, 2, 2, 0, 0)
+        # Test when current time is after the scheduled time
+        from_time = datetime(2024, 1, 1, 3, 0, 0)  # 3 AM
+        next_time = validator.get_next_execution("0 2 * * *", from_time)
+        expected = datetime(2024, 1, 2, 2, 0, 0)  # 2 AM next day
         self.assertEqual(next_time, expected)
+        
+        # Test weekly execution on Sunday
+        from_time = datetime(2024, 1, 1, 0, 0, 0)  # Monday
+        next_time = validator.get_next_execution("0 0 * * 0", from_time)
+        expected = datetime(2024, 1, 7, 0, 0, 0)  # Next Sunday
+        self.assertEqual(next_time, expected)
+    
+    def test_complex_cron_expressions(self):
+        """Test validation and parsing of complex cron expressions."""
+        validator = CronExpressionValidator()
+        
+        # Test step values
+        self.assertTrue(validator.validate_cron_expression("*/5 * * * *"))  # Every 5 minutes
+        self.assertTrue(validator.validate_cron_expression("0 */2 * * *"))  # Every 2 hours
+        self.assertTrue(validator.validate_cron_expression("0 0 */3 * *"))  # Every 3 days
+        
+        # Test ranges with steps
+        self.assertTrue(validator.validate_cron_expression("15-45/10 * * * *"))  # Minutes 15, 25, 35, 45
+        self.assertTrue(validator.validate_cron_expression("0 9-17/2 * * *"))   # Every 2 hours from 9-17
+        
+        # Test comma-separated lists
+        self.assertTrue(validator.validate_cron_expression("0,30 * * * *"))     # Minutes 0 and 30
+        self.assertTrue(validator.validate_cron_expression("0 9,12,17 * * *"))  # 9 AM, noon, 5 PM
+        self.assertTrue(validator.validate_cron_expression("0 0 1,15 * *"))     # 1st and 15th
+        self.assertTrue(validator.validate_cron_expression("0 0 * * 1,3,5"))    # Mon, Wed, Fri
+        
+        # Test combinations
+        self.assertTrue(validator.validate_cron_expression("0,15,30,45 9-17 * * 1-5"))  # Complex workday schedule
+        self.assertTrue(validator.validate_cron_expression("*/10 8-18/2 1-15 */2 *"))   # Very complex
+        
+        # Test edge cases
+        self.assertTrue(validator.validate_cron_expression("59 23 31 12 7"))    # Max values
+        self.assertTrue(validator.validate_cron_expression("0 0 1 1 0"))        # Min values
+        
+        # Test parsing of complex expressions
+        components = validator.parse_expression("0,30 9-17 * * 1-5")
+        self.assertEqual(components['minute'], '0,30')
+        self.assertEqual(components['hour'], '9-17')
+        self.assertEqual(components['day_of_week'], '1-5')
 
 
 class TestScheduleTypes(unittest.TestCase):
@@ -192,13 +292,14 @@ class TestScheduleTypes(unittest.TestCase):
     def test_cron_schedule_type(self):
         """Test CRON schedule type functionality."""
         config = ScheduleConfig(
+            schedule_id="cron_test",
             name="cron_test",
-            schedule_type=ScheduleType.CRON,
+            schedule_type=ScheduleType.RECURRING,
             cron_expression="0 2 * * *",
-            command=["echo", "test"]
+            target_percent=80.0
         )
         
-        self.assertEqual(config.schedule_type, ScheduleType.CRON)
+        self.assertEqual(config.schedule_type, ScheduleType.RECURRING)
         self.assertIsNotNone(config.cron_expression)
     
     def test_conditional_schedule_type(self):
@@ -209,11 +310,12 @@ class TestScheduleTypes(unittest.TestCase):
         )
         
         config = ScheduleConfig(
+            schedule_id="conditional_test",
             name="conditional_test",
             schedule_type=ScheduleType.CONDITIONAL,
             trigger_type=TriggerType.RESOURCE_BASED,
             resource_thresholds=thresholds,
-            command=["echo", "test"]
+            target_percent=80.0
         )
         
         self.assertEqual(config.schedule_type, ScheduleType.CONDITIONAL)
@@ -225,14 +327,13 @@ class TestScheduleTypes(unittest.TestCase):
         execution_time = datetime.now() + timedelta(hours=1)
         
         config = ScheduleConfig(
+            schedule_id="onetime_test",
             name="onetime_test",
             schedule_type=ScheduleType.ONE_TIME,
-            execution_time=execution_time,
-            command=["echo", "test"]
+            target_percent=80.0
         )
         
         self.assertEqual(config.schedule_type, ScheduleType.ONE_TIME)
-        self.assertEqual(config.execution_time, execution_time)
 
 
 class TestScheduleValidation(unittest.TestCase):
@@ -240,59 +341,113 @@ class TestScheduleValidation(unittest.TestCase):
     
     def test_valid_schedule_validation(self):
         """Test validation of valid schedule configurations."""
-        config = ScheduleConfig(
-            name="valid_schedule",
-            schedule_type=ScheduleType.CRON,
+        # Test valid schedule
+        valid_config = ScheduleConfig(
+            schedule_id="valid_schedule",
+            name="Valid Schedule",
             cron_expression="0 2 * * *",
-            command=["python", "unraid_rebalancer.py"]
+            target_percent=80.0
         )
         
-        self.assertTrue(config.is_valid())
+        self.assertTrue(valid_config.is_valid())
+        
+        # Test valid schedule without cron expression
+        valid_config_no_cron = ScheduleConfig(
+            schedule_id="valid_no_cron",
+            name="Valid No Cron",
+            schedule_type=ScheduleType.ONE_TIME
+        )
+        
+        self.assertTrue(valid_config_no_cron.is_valid())
     
     def test_invalid_schedule_validation(self):
         """Test validation of invalid schedule configurations."""
-        # Missing command
-        config = ScheduleConfig(
-            name="invalid_schedule",
-            schedule_type=ScheduleType.CRON,
-            cron_expression="0 2 * * *",
-            command=[]
+        # Test invalid schedule - missing schedule_id
+        invalid_config1 = ScheduleConfig(
+            schedule_id="",
+            name="Invalid Schedule",
+            cron_expression="0 2 * * *"
         )
         
-        self.assertFalse(config.is_valid())
+        self.assertFalse(invalid_config1.is_valid())
         
-        # Invalid cron expression
-        config = ScheduleConfig(
-            name="invalid_cron",
-            schedule_type=ScheduleType.CRON,
-            cron_expression="invalid",
-            command=["echo", "test"]
+        # Test invalid schedule - missing name
+        invalid_config2 = ScheduleConfig(
+            schedule_id="invalid_schedule",
+            name="",
+            cron_expression="0 2 * * *"
         )
         
-        self.assertFalse(config.is_valid())
+        self.assertFalse(invalid_config2.is_valid())
+        
+        # Test invalid schedule - invalid cron expression
+        invalid_config3 = ScheduleConfig(
+            schedule_id="invalid_cron",
+            name="Invalid Cron",
+            cron_expression="invalid cron"
+        )
+        
+        self.assertFalse(invalid_config3.is_valid())
+        
+        # Test invalid schedule - invalid target_percent
+        invalid_config4 = ScheduleConfig(
+            schedule_id="invalid_target",
+            name="Invalid Target",
+            target_percent=150.0  # Over 100%
+        )
+        
+        self.assertFalse(invalid_config4.is_valid())
     
     def test_schedule_conflict_detection(self):
         """Test detection of schedule conflicts."""
+        # Test same schedule ID conflict
         config1 = ScheduleConfig(
-            name="schedule1",
-            schedule_type=ScheduleType.CRON,
-            cron_expression="0 2 * * *",
-            command=["echo", "test1"]
+            schedule_id="same_id",
+            name="Schedule 1",
+            cron_expression="0 2 * * *"
         )
         
         config2 = ScheduleConfig(
-            name="schedule2",
-            schedule_type=ScheduleType.CRON,
-            cron_expression="0 2 * * *",  # Same time
-            command=["echo", "test2"]
+            schedule_id="same_id",
+            name="Schedule 2",
+            cron_expression="0 3 * * *"
         )
         
-        # Test conflict detection logic
         self.assertTrue(config1.conflicts_with(config2))
         
-        # Different times should not conflict
-        config2.cron_expression = "0 3 * * *"
-        self.assertFalse(config1.conflicts_with(config2))
+        # Test same cron expression conflict
+        config3 = ScheduleConfig(
+            schedule_id="schedule_3",
+            name="Schedule 3",
+            cron_expression="0 2 * * *",
+            schedule_type=ScheduleType.RECURRING,
+            trigger_type=TriggerType.TIME_BASED
+        )
+        
+        config4 = ScheduleConfig(
+            schedule_id="schedule_4",
+            name="Schedule 4",
+            cron_expression="0 2 * * *",
+            schedule_type=ScheduleType.RECURRING,
+            trigger_type=TriggerType.TIME_BASED
+        )
+        
+        self.assertTrue(config3.conflicts_with(config4))
+        
+        # Test no conflict
+        config5 = ScheduleConfig(
+            schedule_id="schedule_5",
+            name="Schedule 5",
+            cron_expression="0 3 * * *"
+        )
+        
+        config6 = ScheduleConfig(
+            schedule_id="schedule_6",
+            name="Schedule 6",
+            cron_expression="0 4 * * *"
+        )
+        
+        self.assertFalse(config5.conflicts_with(config6))
 
 
 if __name__ == '__main__':

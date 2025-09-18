@@ -15,6 +15,7 @@ import subprocess
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch, MagicMock
+import pytest
 
 # Import scheduler components
 try:
@@ -26,9 +27,7 @@ try:
     )
 except ImportError:
     # Skip tests if scheduler module not available
-    import sys
-    print("Scheduler module not available - skipping scheduling workflow tests")
-    sys.exit(0)
+    pytest.skip("Scheduler module not available", allow_module_level=True)
 
 
 class TestSchedulingWorkflow(unittest.TestCase):

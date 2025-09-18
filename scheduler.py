@@ -308,6 +308,106 @@ class ScheduleConfig:
             self.exclude_shares = []
         if self.exclude_globs is None:
             self.exclude_globs = []
+    
+    def to_dict(self) -> dict:
+        """Convert ScheduleConfig to dictionary for serialization."""
+        data = asdict(self)
+        
+        # Convert enums to their string values
+        data['schedule_type'] = self.schedule_type.value
+        data['trigger_type'] = self.trigger_type.value
+        
+        # Convert ExecutionStatus enum if present
+        if self.last_execution_status is not None:
+            data['last_execution_status'] = self.last_execution_status.value
+        
+        return data
+    
+    def save_to_file(self, file_path: Path) -> bool:
+        """Save schedule configuration to JSON file."""
+        try:
+            # Ensure parent directories exist
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Convert to dictionary and save as JSON
+            data = self.to_dict()
+            with open(file_path, 'w') as f:
+                json.dump(data, f, indent=2)
+            
+            return True
+            
+        except Exception as e:
+            logging.error(f"Failed to save schedule to {file_path}: {e}")
+            return False
+    
+    def is_valid(self) -> bool:
+        """Validate schedule configuration."""
+        # Check required fields
+        if not self.schedule_id or not self.name:
+            return False
+        
+        # Validate schedule type
+        if not isinstance(self.schedule_type, ScheduleType):
+            return False
+        
+        # Validate cron expression if provided
+        if self.cron_expression:
+            if not CronExpressionValidator.validate_cron_expression(self.cron_expression):
+                return False
+        
+        # Validate resource thresholds if set
+        if self.resource_thresholds:
+            if (self.resource_thresholds.max_cpu_percent < 0 or 
+                self.resource_thresholds.max_cpu_percent > 100):
+                return False
+            if (self.resource_thresholds.max_memory_percent < 0 or 
+                self.resource_thresholds.max_memory_percent > 100):
+                return False
+            if self.resource_thresholds.max_disk_io_mbps < 0:
+                return False
+        
+        # Validate target_percent
+        if self.target_percent < 0 or self.target_percent > 100:
+            return False
+        
+        # Validate runtime limits
+        if self.max_runtime_hours <= 0:
+            return False
+        
+        return True
+    
+    def conflicts_with(self, other_schedule: 'ScheduleConfig') -> bool:
+        """Check if this schedule conflicts with another schedule."""
+        # Check for schedule ID conflicts
+        if self.schedule_id == other_schedule.schedule_id:
+            return True
+        
+        # Check for time-based conflicts if both are time-based and recurring
+        if (self.trigger_type == TriggerType.TIME_BASED and 
+            other_schedule.trigger_type == TriggerType.TIME_BASED and
+            self.schedule_type == ScheduleType.RECURRING and
+            other_schedule.schedule_type == ScheduleType.RECURRING):
+            
+            # If both have cron expressions, check for time overlap
+            if self.cron_expression and other_schedule.cron_expression:
+                # Simple conflict detection: same cron expression
+                if self.cron_expression == other_schedule.cron_expression:
+                    return True
+        
+        # Check for resource threshold conflicts
+        if (self.resource_thresholds and other_schedule.resource_thresholds):
+            # If both schedules have very low resource thresholds, they might conflict
+            if (self.resource_thresholds.max_cpu_percent < 30 and 
+                other_schedule.resource_thresholds.max_cpu_percent < 30):
+                return True
+        
+        # Check for ONE_TIME vs RECURRING conflicts at same time
+        if (self.schedule_type == ScheduleType.ONE_TIME and 
+            other_schedule.schedule_type == ScheduleType.RECURRING):
+            # Could add more sophisticated time conflict detection here
+            pass
+        
+        return False
 
 
 class CronExpressionValidator:
@@ -365,41 +465,64 @@ class CronExpressionValidator:
         if field == "*":
             return True
         
-        # Handle ranges, lists, and steps
-        for part in field.split(','):
-            if '/' in part:
-                # Step values like "*/5" or "0-20/5"
-                range_part, step = part.split('/', 1)
-                try:
-                    step_val = int(step)
-                    if step_val <= 0:
+        try:
+            # Handle comma-separated values
+            for part in field.split(','):
+                if '/' in part:
+                    # Handle step values (e.g., */5, 1-10/2)
+                    range_part, step_part = part.split('/', 1)
+                    
+                    # Validate step value
+                    try:
+                        step = int(step_part)
+                        if step <= 0:
+                            return False
+                    except ValueError:
                         return False
-                except ValueError:
-                    return False
-                part = range_part
+                    
+                    # Validate range part
+                    if range_part == '*':
+                        # */step is valid
+                        pass
+                    elif '-' in range_part:
+                        # range/step format
+                        try:
+                            start, end = map(int, range_part.split('-', 1))
+                            if not (min_val <= start <= max_val and min_val <= end <= max_val and start <= end):
+                                return False
+                        except ValueError:
+                            return False
+                    else:
+                        # single_value/step format
+                        try:
+                            value = int(range_part)
+                            if not (min_val <= value <= max_val):
+                                return False
+                        except ValueError:
+                            return False
+                
+                elif '-' in part:
+                    # Handle ranges (e.g., 1-5)
+                    try:
+                        start, end = map(int, part.split('-', 1))
+                        if not (min_val <= start <= max_val and min_val <= end <= max_val and start <= end):
+                            return False
+                    except ValueError:
+                        return False
+                
+                else:
+                    # Handle single values
+                    try:
+                        value = int(part)
+                        if not (min_val <= value <= max_val):
+                            return False
+                    except ValueError:
+                        return False
             
-            if '-' in part:
-                # Range like "0-20"
-                try:
-                    start, end = part.split('-', 1)
-                    start_val = int(start)
-                    end_val = int(end)
-                    if not (min_val <= start_val <= max_val and min_val <= end_val <= max_val):
-                        return False
-                    if start_val > end_val:
-                        return False
-                except ValueError:
-                    return False
-            elif part != "*":
-                # Single value
-                try:
-                    val = int(part)
-                    if not (min_val <= val <= max_val):
-                        return False
-                except ValueError:
-                    return False
-        
-        return True
+            return True
+            
+        except Exception:
+            return False
     
     @classmethod
     def create_daily_expression(cls, hour: int, minute: int = 0) -> str:
@@ -415,6 +538,134 @@ class CronExpressionValidator:
     def create_monthly_expression(cls, day_of_month: int, hour: int, minute: int = 0) -> str:
         """Create a monthly cron expression."""
         return f"{minute} {hour} {day_of_month} * *"
+    
+    @classmethod
+    def parse_expression(cls, expression: str) -> Dict[str, Any]:
+        """Parse a cron expression into its components."""
+        if not cls.validate_cron_expression(expression):
+            raise ValueError(f"Invalid cron expression: {expression}")
+        
+        parts = expression.strip().split()
+        if len(parts) != 5:
+            raise ValueError(f"Cron expression must have 5 parts, got {len(parts)}")
+        
+        return {
+            'minute': parts[0],
+            'hour': parts[1], 
+            'day_of_month': parts[2],
+            'month': parts[3],
+            'day_of_week': parts[4],
+            'original': expression
+        }
+    
+    @classmethod
+    def _parse_cron_field(cls, field: str, min_val: int, max_val: int) -> set:
+        """Parse a single cron field into a set of valid values."""
+        values = set()
+        
+        if field == '*':
+            return set(range(min_val, max_val + 1))
+        
+        # Handle comma-separated values
+        for part in field.split(','):
+            if '/' in part:
+                # Handle step values (e.g., */5, 1-10/2)
+                range_part, step = part.split('/', 1)
+                step = int(step)
+                
+                if range_part == '*':
+                    start, end = min_val, max_val
+                elif '-' in range_part:
+                    start, end = map(int, range_part.split('-', 1))
+                else:
+                    start = end = int(range_part)
+                
+                values.update(range(start, end + 1, step))
+            
+            elif '-' in part:
+                # Handle ranges (e.g., 1-5)
+                start, end = map(int, part.split('-', 1))
+                values.update(range(start, end + 1))
+            
+            else:
+                # Handle single values
+                values.add(int(part))
+        
+        # Filter values to be within valid range
+        return {v for v in values if min_val <= v <= max_val}
+    
+    @classmethod
+    def get_next_execution(cls, expression: str, from_time: Optional[datetime] = None) -> Optional[datetime]:
+        """Calculate the next execution time for a cron expression."""
+        if not cls.validate_cron_expression(expression):
+            return None
+        
+        if from_time is None:
+            from_time = datetime.now()
+        
+        try:
+            parts = expression.strip().split()
+            if len(parts) != 5:
+                return None
+            
+            minute_field, hour_field, day_field, month_field, dow_field = parts
+            
+            # Parse each field into sets of valid values
+            minutes = cls._parse_cron_field(minute_field, 0, 59)
+            hours = cls._parse_cron_field(hour_field, 0, 23)
+            days = cls._parse_cron_field(day_field, 1, 31)
+            months = cls._parse_cron_field(month_field, 1, 12)
+            dows = cls._parse_cron_field(dow_field, 0, 7)
+            
+            # Convert Sunday from 7 to 0 for consistency
+            if 7 in dows:
+                dows.remove(7)
+                dows.add(0)
+            
+            # Start from the next minute to avoid immediate execution
+            candidate = from_time.replace(second=0, microsecond=0) + timedelta(minutes=1)
+            
+            # Search for the next valid execution time (max 4 years)
+            max_iterations = 4 * 365 * 24 * 60
+            iterations = 0
+            
+            while iterations < max_iterations:
+                # Check if current candidate matches all cron fields
+                if (candidate.minute in minutes and
+                    candidate.hour in hours and
+                    candidate.month in months):
+                    
+                    # Handle day of month vs day of week logic
+                    # In cron, if both day and dow are specified (not *), 
+                    # the condition is OR, not AND
+                    day_match = candidate.day in days
+                    dow_match = (candidate.weekday() + 1) % 7 in dows  # Convert to cron weekday
+                    
+                    if day_field == '*' and dow_field == '*':
+                        # Both are wildcards - always match
+                        return candidate
+                    elif day_field == '*':
+                        # Only check day of week
+                        if dow_match:
+                            return candidate
+                    elif dow_field == '*':
+                        # Only check day of month
+                        if day_match:
+                            return candidate
+                    else:
+                        # Both specified - OR condition
+                        if day_match or dow_match:
+                            return candidate
+                
+                # Move to next minute
+                candidate += timedelta(minutes=1)
+                iterations += 1
+            
+            return None  # No valid time found within reasonable range
+            
+        except (ValueError, IndexError) as e:
+            logging.error(f"Error calculating next execution for cron expression '{expression}': {e}")
+            return None
 
 
 class ScheduleManager:
@@ -690,6 +941,57 @@ class CronManager:
                 text=True, 
                 check=False
             )
+            if result.returncode == 0:
+                return [line.strip() for line in result.stdout.split('\n') if line.strip()]
+            else:
+                return []
+        except Exception:
+            return []
+    
+    def _remove_schedule_from_crontab(self, schedule_id: str, crontab_lines: List[str]):
+        """Remove all lines related to a specific schedule from crontab list."""
+        comment_line = f"{self.cron_comment_prefix} {schedule_id}"
+        
+        # Remove comment and following command line
+        i = 0
+        while i < len(crontab_lines):
+            if crontab_lines[i] == comment_line:
+                # Remove comment line
+                crontab_lines.pop(i)
+                # Remove following command line if it exists
+                if i < len(crontab_lines) and not crontab_lines[i].startswith("#"):
+                    crontab_lines.pop(i)
+            else:
+                i += 1
+    
+    def _install_crontab(self, crontab_lines: List[str]) -> bool:
+        """Install the given crontab lines."""
+        try:
+            # Create temporary file with crontab content
+            with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.crontab') as f:
+                for line in crontab_lines:
+                    f.write(line + '\n')
+                temp_file = f.name
+            
+            try:
+                # Install the crontab
+                result = subprocess.run(["crontab", temp_file], capture_output=True, text=True)
+                if result.returncode == 0:
+                    logging.info("Successfully installed crontab")
+                    return True
+                else:
+                    logging.error(f"Failed to install crontab: {result.stderr}")
+                    return False
+            finally:
+                # Clean up temporary file
+                try:
+                    os.unlink(temp_file)
+                except Exception as e:
+                    logging.warning(f"Failed to remove temporary crontab file {temp_file}: {e}")
+                    
+        except Exception as e:
+            logging.error(f"Failed to install crontab: {e}")
+            return False
 
 
 class NotificationManager:
@@ -783,6 +1085,7 @@ class ScheduleHealthMonitor:
         self.logger = logging.getLogger(__name__)
         self.schedule_manager = ScheduleManager(config_dir)
         self.monitor = ScheduleMonitor(config_dir)
+        self.auto_suspend_threshold = 5  # Default threshold
     
     def check_schedule_health(self, schedule_id: str) -> Dict[str, Any]:
         """Check health of a specific schedule."""
@@ -863,6 +1166,11 @@ class ScheduleHealthMonitor:
             'warning_schedules': warning_schedules,
             'system_healthy': len(unhealthy_schedules) == 0
         }
+    
+    def set_auto_suspend_threshold(self, threshold: int):
+        """Set the auto-suspend threshold for consecutive failures."""
+        self.auto_suspend_threshold = threshold
+        self.logger.info(f"Auto-suspend threshold set to {threshold} consecutive failures")
 
 
 class ErrorRecoveryManager:
@@ -1048,65 +1356,78 @@ class ErrorRecoveryManager:
                 return all_failed
         
         return False
-            
-            if result.returncode == 0:
-                return [line.strip() for line in result.stdout.split('\n') if line.strip()]
-            else:
-                # No crontab exists yet
-                return []
-                
-        except Exception as e:
-            logging.warning(f"Failed to read current crontab: {e}")
-            return []
     
-    def _remove_schedule_from_crontab(self, schedule_id: str, crontab_lines: List[str]):
-        """Remove all lines related to a specific schedule from crontab list."""
-        comment_line = f"{self.cron_comment_prefix} {schedule_id}"
+    def _classify_failure_type(self, error_message: str, exit_code: Optional[int] = None, 
+                              stack_trace: str = "") -> FailureType:
+        """Classify the type of failure based on error information."""
+        if not error_message:
+            return FailureType.UNKNOWN
         
-        # Remove comment and following command line
-        i = 0
-        while i < len(crontab_lines):
-            if crontab_lines[i] == comment_line:
-                # Remove comment line
-                crontab_lines.pop(i)
-                # Remove following command line if it exists
-                if i < len(crontab_lines) and not crontab_lines[i].startswith("#"):
-                    crontab_lines.pop(i)
-            else:
-                i += 1
-    
-    def _install_crontab(self, crontab_lines: List[str]) -> bool:
-        """Install a new crontab from a list of lines."""
-        try:
-            # Create temporary file with new crontab content
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.cron', delete=False) as f:
-                for line in crontab_lines:
-                    f.write(line + '\n')
-                temp_file = f.name
-            
-            try:
-                # Install the new crontab
-                result = subprocess.run(
-                    ["crontab", temp_file],
-                    capture_output=True,
-                    text=True,
-                    check=True
-                )
-                
-                return result.returncode == 0
-                
-            finally:
-                # Clean up temporary file
-                Path(temp_file).unlink(missing_ok=True)
-                
-        except subprocess.CalledProcessError as e:
-            logging.error(f"Failed to install crontab: {e.stderr}")
-            return False
-        except Exception as e:
-            logging.error(f"Failed to install crontab: {e}")
-            return False
-
-
+        error_lower = error_message.lower()
+        
+        # Check for permission errors (including variations)
+        if any(keyword in error_lower for keyword in ['permission denied', 'access denied', 'forbidden', 'unauthorized', 'operation not permitted', 'insufficient privileges', 'access is denied']):
+            return FailureType.PERMISSION_DENIED
+        
+        # Check for disk/storage errors
+        if any(keyword in error_lower for keyword in ['no space left', 'disk full', 'i/o error', 'read-only', 'disk error']):
+            return FailureType.DISK_ERROR
+        
+        # Check for timeout first (more specific than network)
+        if any(keyword in error_lower for keyword in ['timeout', 'timed out', 'deadline exceeded']):
+            return FailureType.TIMEOUT
+        
+        # Check for network errors (including specific network error messages)
+        if any(keyword in error_lower for keyword in ['network', 'connection refused', 'connection reset', 'unreachable', 'dns', 'host not found', 'no route to host']):
+            return FailureType.NETWORK_ERROR
+        
+        # Check for resource exhaustion (including memory and resource errors)
+        if any(keyword in error_lower for keyword in ['out of memory', 'memory error', 'memory allocation failed', 'resource temporarily unavailable']):
+            return FailureType.RESOURCE_EXHAUSTION
+        
+        # Check for configuration errors
+        if any(keyword in error_lower for keyword in ['config', 'configuration', 'invalid argument', 'bad option']):
+            return FailureType.CONFIGURATION_ERROR
+        
+        # Check for user cancellation
+        if any(keyword in error_lower for keyword in ['cancelled', 'canceled', 'interrupted', 'sigterm', 'sigint']):
+            return FailureType.USER_CANCELLED
+        
+        # Check stack trace for additional clues
+        if stack_trace:
+            stack_lower = stack_trace.lower()
+            if 'permissionerror' in stack_lower:
+                return FailureType.PERMISSION_DENIED
+            elif 'memoryerror' in stack_lower:
+                return FailureType.RESOURCE_EXHAUSTION
+            elif 'timeouterror' in stack_lower:
+                return FailureType.TIMEOUT
+            elif 'oserror' in stack_lower and 'no space left' in stack_lower:
+                return FailureType.DISK_ERROR
+        
+        # Check exit codes if available (after message analysis)
+        if exit_code is not None:
+            if exit_code == 2:
+                return FailureType.CONFIGURATION_ERROR
+            elif exit_code == 126:
+                return FailureType.PERMISSION_DENIED
+            elif exit_code == 127:
+                return FailureType.CONFIGURATION_ERROR
+            elif exit_code == 130:  # SIGINT
+                return FailureType.USER_CANCELLED
+            elif exit_code == 143:  # SIGTERM
+                return FailureType.USER_CANCELLED
+            elif exit_code == 1:
+                 # Exit code 1 is generic, check for specific unknown error patterns
+                 generic_messages = ['unknown error', 'error', '', 'unexpected error occurred', 
+                                   'internal server error', 'something went wrong', 'error code 500']
+                 if not error_message or error_message.lower().strip() in generic_messages:
+                     return FailureType.UNKNOWN
+                 # For exit code 1 with specific error messages, return SYSTEM_ERROR
+                 return FailureType.SYSTEM_ERROR
+        
+        # Default to unknown if we can't classify it
+        return FailureType.UNKNOWN
 class SchedulingEngine:
     """Main scheduling engine that coordinates schedule management and execution."""
     
@@ -1175,7 +1496,60 @@ class SchedulingEngine:
         self.schedule_manager.save_schedule(schedule)
         
         return self.cron_manager.remove_schedule(schedule_id)
+
+    def install_schedule(self, schedule: ScheduleConfig) -> bool:
+        """Install a schedule (alias for create_and_install_schedule)."""
+        return self.create_and_install_schedule(schedule)
     
+    def update_schedule(self, schedule: ScheduleConfig) -> bool:
+        """Update a schedule (alias for update_and_reinstall_schedule)."""
+        return self.update_and_reinstall_schedule(schedule.schedule_id, schedule)
+    
+    def list_installed_schedules(self) -> List[ScheduleConfig]:
+        """List all schedules that have installed cron jobs."""
+        installed_ids = self.cron_manager.list_installed_schedules()
+        schedules = []
+        for schedule_id in installed_ids:
+            schedule = self.schedule_manager.get_schedule(schedule_id)
+            if schedule:
+                schedules.append(schedule)
+            else:
+                # Create a minimal schedule config for cron entries without saved schedules
+                mock_schedule = ScheduleConfig(
+                    schedule_id=schedule_id,
+                    name=schedule_id,  # Use schedule_id as name for test compatibility
+                    description=f"Installed cron job: {schedule_id}"
+                )
+                schedules.append(mock_schedule)
+        return schedules
+    
+    def backup_crontab(self, backup_file: Path) -> bool:
+        """Backup current crontab to a file."""
+        try:
+            current_crontab = self.cron_manager._get_current_crontab()
+            with open(backup_file, 'w') as f:
+                for line in current_crontab:
+                    f.write(line + '\n')
+            return True
+        except Exception as e:
+            logging.error(f"Failed to backup crontab: {e}")
+            return False
+    
+    def restore_crontab(self, backup_file: Path) -> bool:
+        """Restore crontab from a backup file."""
+        try:
+            if not backup_file.exists():
+                logging.error(f"Backup file does not exist: {backup_file}")
+                return False
+            
+            with open(backup_file, 'r') as f:
+                crontab_lines = [line.rstrip('\n') for line in f.readlines()]
+            
+            return self.cron_manager._install_crontab(crontab_lines)
+        except Exception as e:
+            logging.error(f"Failed to restore crontab: {e}")
+            return False
+
     def sync_schedules(self) -> bool:
         """Synchronize schedule configurations with installed cron jobs."""
         try:
@@ -1202,6 +1576,179 @@ class SchedulingEngine:
         except Exception as e:
             logging.error(f"Failed to sync schedules: {e}")
             return False
+    
+    # Cron Expression Helper Methods
+    def create_daily_cron(self, hour: int, minute: int = 0) -> str:
+        """Create a daily cron expression.
+        
+        Args:
+            hour: Hour of day (0-23)
+            minute: Minute of hour (0-59)
+            
+        Returns:
+            Cron expression string for daily execution
+        """
+        if not (0 <= hour <= 23):
+            raise ValueError(f"Hour must be between 0 and 23, got {hour}")
+        if not (0 <= minute <= 59):
+            raise ValueError(f"Minute must be between 0 and 59, got {minute}")
+        return CronExpressionValidator.create_daily_expression(hour, minute)
+    
+    def create_weekly_cron(self, day_of_week: int, hour: int, minute: int = 0) -> str:
+        """Create a weekly cron expression.
+        
+        Args:
+            day_of_week: Day of week (0=Sunday, 1=Monday, ..., 6=Saturday)
+            hour: Hour of day (0-23)
+            minute: Minute of hour (0-59)
+            
+        Returns:
+            Cron expression string for weekly execution
+        """
+        if not (0 <= day_of_week <= 6):
+            raise ValueError(f"Day of week must be between 0 and 6, got {day_of_week}")
+        if not (0 <= hour <= 23):
+            raise ValueError(f"Hour must be between 0 and 23, got {hour}")
+        if not (0 <= minute <= 59):
+            raise ValueError(f"Minute must be between 0 and 59, got {minute}")
+        return CronExpressionValidator.create_weekly_expression(day_of_week, hour, minute)
+    
+    def create_monthly_cron(self, day: int, hour: int, minute: int = 0) -> str:
+        """Create a monthly cron expression.
+        
+        Args:
+            day: Day of month (1-31)
+            hour: Hour of day (0-23)
+            minute: Minute of hour (0-59)
+            
+        Returns:
+            Cron expression string for monthly execution
+        """
+        if not (1 <= day <= 31):
+            raise ValueError(f"Day must be between 1 and 31, got {day}")
+        if not (0 <= hour <= 23):
+            raise ValueError(f"Hour must be between 0 and 23, got {hour}")
+        if not (0 <= minute <= 59):
+            raise ValueError(f"Minute must be between 0 and 59, got {minute}")
+        return CronExpressionValidator.create_monthly_expression(day, hour, minute)
+    
+    def create_interval_cron(self, minutes: int = None, hours: int = None, days: int = None) -> str:
+        """Create an interval-based cron expression.
+        
+        Args:
+            minutes: Interval in minutes (mutually exclusive with hours/days)
+            hours: Interval in hours (mutually exclusive with minutes/days)
+            days: Interval in days (mutually exclusive with minutes/hours)
+            
+        Returns:
+            Cron expression string for interval execution
+        """
+        # Validate that only one interval type is specified
+        interval_count = sum(x is not None for x in [minutes, hours, days])
+        if interval_count != 1:
+            raise ValueError("Exactly one of minutes, hours, or days must be specified")
+        
+        if minutes is not None:
+            if not (1 <= minutes <= 59):
+                raise ValueError(f"Minutes interval must be between 1 and 59, got {minutes}")
+            return f"*/{minutes} * * * *"
+        elif hours is not None:
+            if not (1 <= hours <= 23):
+                raise ValueError(f"Hours interval must be between 1 and 23, got {hours}")
+            return f"0 */{hours} * * *"
+        elif days is not None:
+            if not (1 <= days <= 31):
+                raise ValueError(f"Days interval must be between 1 and 31, got {days}")
+            return f"0 0 */{days} * *"
+    
+    def generate_cron_line(self, schedule: ScheduleConfig) -> str:
+        """Generate a complete cron line for a schedule.
+        
+        Args:
+            schedule: Schedule configuration
+            
+        Returns:
+            Complete cron line with comment and command
+        """
+        if not schedule.cron_expression:
+            raise ValueError(f"Schedule {schedule.schedule_id} has no cron expression")
+        
+        # Generate the command
+        command = self.cron_manager._generate_cron_command(schedule)
+        
+        # Create the cron line with comment
+        comment = f"# Unraid Rebalancer Schedule: {schedule.name}"
+        cron_line = f"{schedule.cron_expression} {command}"
+        
+        return f"{comment}\n{cron_line}"
+    
+    def parse_cron_line(self, cron_line: str) -> Optional[dict]:
+        """Parse a cron line into its components.
+        
+        Args:
+            cron_line: Complete cron line string
+            
+        Returns:
+            Dictionary with cron_expression, command, and valid fields, or None if invalid
+        """
+        try:
+            lines = cron_line.strip().split('\n')
+            
+            # Handle single line (no comment)
+            if len(lines) == 1:
+                line = lines[0].strip()
+                if line.startswith('#'):
+                    return None
+                
+                # Split into cron expression and command
+                parts = line.split(None, 5)  # Split on first 5 whitespace groups
+                if len(parts) < 6:
+                    return None
+                
+                cron_expr = ' '.join(parts[:5])
+                command = parts[5]
+                
+                # Only return valid cron expressions
+                if not CronExpressionValidator.validate_cron_expression(cron_expr):
+                    return None
+                
+                return {
+                    'cron_expression': cron_expr,
+                    'command': command,
+                    'valid': True
+                }
+            
+            # Handle multi-line (with comment)
+            elif len(lines) == 2:
+                comment_line = lines[0].strip()
+                cron_line = lines[1].strip()
+                
+                if not comment_line.startswith('#'):
+                    return None
+                
+                # Parse the actual cron line
+                parts = cron_line.split(None, 5)
+                if len(parts) < 6:
+                    return None
+                
+                cron_expr = ' '.join(parts[:5])
+                command = parts[5]
+                
+                # Only return valid cron expressions
+                if not CronExpressionValidator.validate_cron_expression(cron_expr):
+                    return None
+                
+                return {
+                    'cron_expression': cron_expr,
+                    'command': command,
+                    'valid': True
+                }
+            
+            else:
+                return None
+                
+        except Exception:
+            return None
 
 
 class SystemResourceMonitor:

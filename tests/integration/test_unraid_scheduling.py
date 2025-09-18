@@ -14,8 +14,9 @@ import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch, MagicMock, mock_open
+import pytest
 
-# Import components
+# Import required modules
 try:
     from scheduler import (
         ScheduleConfig, ScheduleType, SchedulingEngine,
@@ -26,9 +27,7 @@ try:
     )
 except ImportError:
     # Skip tests if modules not available
-    import sys
-    print("Required modules not available - skipping Unraid scheduling tests")
-    sys.exit(0)
+    pytest.skip("Required modules not available", allow_module_level=True)
 
 
 class TestUnraidUserScriptIntegration(unittest.TestCase):

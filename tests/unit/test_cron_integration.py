@@ -36,10 +36,11 @@ class TestCronIntegration(unittest.TestCase):
         
         # Create test schedule
         self.test_schedule = ScheduleConfig(
+            schedule_id="test_rebalance",
             name="test_rebalance",
-            schedule_type=ScheduleType.CRON,
+            schedule_type=ScheduleType.RECURRING,
             cron_expression="0 2 * * *",
-            command=["python", "/path/to/unraid_rebalancer.py", "--target", "80"]
+            target_percent=80.0
         )
         
     def tearDown(self):
@@ -53,8 +54,8 @@ class TestCronIntegration(unittest.TestCase):
         # Mock successful crontab command
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         
-        engine = SchedulingEngine()
-        result = engine.install_schedule(self.test_schedule)
+        engine = SchedulingEngine(script_path=Path("/test/script.py"))
+        result = engine.create_and_install_schedule(self.test_schedule)
         
         self.assertTrue(result)
         
@@ -81,8 +82,8 @@ class TestCronIntegration(unittest.TestCase):
             MagicMock(returncode=0, stdout="", stderr="")  # crontab -
         ]
         
-        engine = SchedulingEngine()
-        result = engine.remove_schedule("test_rebalance")
+        engine = SchedulingEngine(script_path=Path("/test/script.py"))
+        result = engine.delete_schedule("test_rebalance")
         
         self.assertTrue(result)
         
@@ -103,7 +104,7 @@ class TestCronIntegration(unittest.TestCase):
         
         mock_run.return_value = MagicMock(returncode=0, stdout=existing_crontab, stderr="")
         
-        engine = SchedulingEngine()
+        engine = SchedulingEngine(script_path=Path("/test/script.py"))
         schedules = engine.list_installed_schedules()
         
         # Should find 2 rebalancer schedules
@@ -128,13 +129,14 @@ class TestCronIntegration(unittest.TestCase):
         
         # Update schedule with new time
         updated_schedule = ScheduleConfig(
+            schedule_id="test_rebalance_update",
             name="test_rebalance",
-            schedule_type=ScheduleType.CRON,
+            schedule_type=ScheduleType.RECURRING,
             cron_expression="0 3 * * *",  # Changed from 2 AM to 3 AM
-            command=["python", "/path/to/unraid_rebalancer.py", "--target", "85"]
+            target_percent=85.0
         )
         
-        engine = SchedulingEngine()
+        engine = SchedulingEngine(script_path=Path("/test/script.py"))
         result = engine.update_schedule(updated_schedule)
         
         self.assertTrue(result)
@@ -144,19 +146,20 @@ class TestCronIntegration(unittest.TestCase):
     
     def test_cron_expression_generation(self):
         """Test generation of cron expressions from schedule configs."""
-        engine = SchedulingEngine()
+        engine = SchedulingEngine(script_path=Path("/test/script.py"))
         
         # Test daily schedule
         daily_config = ScheduleConfig(
+            schedule_id="daily_test",
             name="daily",
-            schedule_type=ScheduleType.CRON,
+            schedule_type=ScheduleType.RECURRING,
             cron_expression="0 2 * * *",
-            command=["echo", "daily"]
+            target_percent=80.0
         )
         
         cron_line = engine.generate_cron_line(daily_config)
         self.assertIn("0 2 * * *", cron_line)
-        self.assertIn("echo daily", cron_line)
+        self.assertIn("/test/script.py", cron_line)  # Should contain the script path
         self.assertIn("# Unraid Rebalancer Schedule: daily", cron_line)
     
     @patch('subprocess.run')
@@ -169,8 +172,8 @@ class TestCronIntegration(unittest.TestCase):
             stderr="crontab: command not found"
         )
         
-        engine = SchedulingEngine()
-        result = engine.install_schedule(self.test_schedule)
+        engine = SchedulingEngine(script_path=Path("/test/script.py"))
+        result = engine.create_and_install_schedule(self.test_schedule)
         
         self.assertFalse(result)
     
@@ -184,14 +187,14 @@ class TestCronIntegration(unittest.TestCase):
             stderr="crontab: you are not allowed to use this program"
         )
         
-        engine = SchedulingEngine()
-        result = engine.install_schedule(self.test_schedule)
+        engine = SchedulingEngine(script_path=Path("/test/script.py"))
+        result = engine.create_and_install_schedule(self.test_schedule)
         
         self.assertFalse(result)
     
     def test_cron_line_parsing(self):
         """Test parsing individual cron lines."""
-        engine = SchedulingEngine()
+        engine = SchedulingEngine(script_path=Path("/test/script.py"))
         
         # Test valid cron line
         cron_line = "0 2 * * * python /path/to/script.py --arg value"
@@ -210,13 +213,14 @@ class TestCronIntegration(unittest.TestCase):
         """Test that schedules are validated before installation."""
         # Create invalid schedule
         invalid_schedule = ScheduleConfig(
+            schedule_id="invalid_test",
             name="invalid",
-            schedule_type=ScheduleType.CRON,
+            schedule_type=ScheduleType.RECURRING,
             cron_expression="invalid expression",
-            command=["echo", "test"]
+            target_percent=80.0
         )
         
-        engine = SchedulingEngine()
+        engine = SchedulingEngine(script_path=Path("/test/script.py"))
         result = engine.install_schedule(invalid_schedule)
         
         # Should fail validation before attempting cron installation
@@ -237,7 +241,7 @@ class TestCronIntegration(unittest.TestCase):
             stderr=""
         )
         
-        engine = SchedulingEngine()
+        engine = SchedulingEngine(script_path=Path("/test/script.py"))
         
         # Test backup
         backup_file = Path(self.temp_dir) / "crontab_backup"
@@ -259,7 +263,7 @@ class TestCronExpressionHelpers(unittest.TestCase):
     
     def test_daily_cron_helper(self):
         """Test daily cron expression helper."""
-        engine = SchedulingEngine()
+        engine = SchedulingEngine(script_path=Path("/test/script.py"))
         
         # Test daily at specific time
         expression = engine.create_daily_cron(hour=2, minute=30)
@@ -271,7 +275,7 @@ class TestCronExpressionHelpers(unittest.TestCase):
     
     def test_weekly_cron_helper(self):
         """Test weekly cron expression helper."""
-        engine = SchedulingEngine()
+        engine = SchedulingEngine(script_path=Path("/test/script.py"))
         
         # Test weekly on Sunday at 2 AM
         expression = engine.create_weekly_cron(day_of_week=0, hour=2, minute=0)
@@ -283,7 +287,7 @@ class TestCronExpressionHelpers(unittest.TestCase):
     
     def test_monthly_cron_helper(self):
         """Test monthly cron expression helper."""
-        engine = SchedulingEngine()
+        engine = SchedulingEngine(script_path=Path("/test/script.py"))
         
         # Test monthly on 1st at 3 AM
         expression = engine.create_monthly_cron(day=1, hour=3, minute=0)
@@ -295,7 +299,7 @@ class TestCronExpressionHelpers(unittest.TestCase):
     
     def test_interval_cron_helper(self):
         """Test interval-based cron expression helper."""
-        engine = SchedulingEngine()
+        engine = SchedulingEngine(script_path=Path("/test/script.py"))
         
         # Test every 15 minutes
         expression = engine.create_interval_cron(minutes=15)

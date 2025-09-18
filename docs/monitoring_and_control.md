@@ -75,11 +75,11 @@ python unraid_rebalancer.py --resume-schedule SCHEDULE_ID
 ### Cleanup Old Records
 
 ```bash
-# Clean up execution records older than 30 days (default)
-python unraid_rebalancer.py --cleanup-executions
-
 # Clean up execution records older than specified days
-python unraid_rebalancer.py --cleanup-executions --cleanup-days 60
+python unraid_rebalancer.py --cleanup-executions 30
+
+# Clean up execution records older than 60 days
+python unraid_rebalancer.py --cleanup-executions 60
 ```
 
 ### Emergency Stop

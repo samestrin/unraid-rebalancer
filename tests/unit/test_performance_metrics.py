@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 import unittest
+import uuid
 from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
 
@@ -211,7 +212,7 @@ class TestPerformanceMonitor(unittest.TestCase):
         mock_disk.return_value = Mock(read_bytes=1000, write_bytes=2000)
         mock_net.return_value = Mock(bytes_sent=500, bytes_recv=750)
         
-        monitor = ur.PerformanceMonitor("test_op", metrics_enabled=True)
+        monitor = ur.PerformanceMonitor(f"test_op_{uuid.uuid4().hex[:8]}", metrics_enabled=True)
         
         # Create a test unit
         unit = ur.Unit("Movies", "Movie1", 1000000000, "disk1")
@@ -243,7 +244,7 @@ class TestPerformanceMonitor(unittest.TestCase):
         mock_disk.return_value = Mock(read_bytes=1000, write_bytes=2000)
         mock_net.return_value = Mock(bytes_sent=500, bytes_recv=750)
         
-        monitor = ur.PerformanceMonitor("test_op", metrics_enabled=True)
+        monitor = ur.PerformanceMonitor(f"test_op_{uuid.uuid4().hex[:8]}", metrics_enabled=True)
         
         unit = ur.Unit("Movies", "Movie1", 1000000000, "disk1")
         transfer = monitor.start_transfer(unit, "disk2")
@@ -264,7 +265,7 @@ class TestPerformanceMonitor(unittest.TestCase):
         mock_disk.return_value = Mock(read_bytes=1000, write_bytes=2000)
         mock_net.return_value = Mock(bytes_sent=500, bytes_recv=750)
         
-        monitor = ur.PerformanceMonitor("test_op", metrics_enabled=True)
+        monitor = ur.PerformanceMonitor(f"test_op_{uuid.uuid4().hex[:8]}", metrics_enabled=True)
         
         # Add some transfer data
         unit1 = ur.Unit("Movies", "Movie1", 1000000000, "disk1")
@@ -294,7 +295,8 @@ class TestPerformanceMonitor(unittest.TestCase):
         mock_disk.return_value = Mock(read_bytes=1000, write_bytes=2000)
         mock_net.return_value = Mock(bytes_sent=500, bytes_recv=750)
         
-        monitor = ur.PerformanceMonitor("test_op", metrics_enabled=True)
+        operation_id = f"test_op_{uuid.uuid4().hex[:8]}"
+        monitor = ur.PerformanceMonitor(operation_id, metrics_enabled=True)
         
         # Add some test data
         unit = ur.Unit("Movies", "Movie1", 1000000000, "disk1")
@@ -311,7 +313,7 @@ class TestPerformanceMonitor(unittest.TestCase):
             # Verify JSON content
             with open(json_path) as f:
                 data = json.load(f)
-            self.assertEqual(data['operation_id'], "test_op")
+            self.assertEqual(data['operation_id'], operation_id)
             self.assertEqual(len(data['transfers']), 1)
             
             # Test CSV export
