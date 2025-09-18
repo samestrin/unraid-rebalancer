@@ -2458,16 +2458,11 @@ def main():
         print(f"Reset {reset_count} failure records for schedule '{args.reset_failures}'")
         return 0
     
-    if args.auto_suspend_threshold is not None:
-        if not ScheduleHealthMonitor:
-            print("Schedule health monitoring not available")
-            return 1
-        
+    # Initialize health monitoring if available (but don't exit early)
+    if ScheduleHealthMonitor:
         health_monitor = ScheduleHealthMonitor()
         health_monitor.set_auto_suspend_threshold(args.auto_suspend_threshold)
-        
         print(f"Auto-suspension threshold set to {args.auto_suspend_threshold} consecutive failures")
-        return 0
     
     # Unraid Integration Commands
     if args.array_status:
@@ -2618,7 +2613,7 @@ def main():
         
         return 0
     
-    if args.check_maintenance:
+    if args.maintenance_window:
         if not UnraidIntegrationManager:
             print("Unraid integration not available")
             return 1
