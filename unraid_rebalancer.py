@@ -203,6 +203,11 @@ class Disk:
     def used_pct(self) -> float:
         return (self.used_bytes / self.size_bytes) * 100 if self.size_bytes else 0.0
 
+    @property
+    def fill_percentage(self) -> float:
+        """Calculate fill percentage for drive prioritization."""
+        return self.used_pct
+
 
 @dataclasses.dataclass
 class Unit:
@@ -1369,7 +1374,7 @@ def du_path(path: Path) -> int:
 # ---------- Planning ----------
 
 def build_plan(disks: List[Disk], units: List[Unit], target_percent: Optional[float],
-               headroom_percent: float) -> Plan:
+               headroom_percent: float, strategy: str = 'size') -> Plan:
     # Compute targets
     # If target_percent provided, aim each disk to be <= target_percent and also
     # try to raise low disks to (100 - headroom_percent)
@@ -1393,17 +1398,28 @@ def build_plan(disks: List[Disk], units: List[Unit], target_percent: Optional[fl
         elif d.used_bytes < tgt:
             recipients[d.name] = tgt - d.used_bytes
 
-    # Sort units from donors by size (largest first for fewer moves)
+    # Sort units from donors based on strategy
     donor_units = [u for u in units if u.src_disk in donors]
-    donor_units.sort(key=lambda u: u.size_bytes, reverse=True)
+
+    # Create disk lookup for efficiency
+    disk_lookup = {d.name: d for d in disks}
+
+    if strategy == 'size':
+        # Original sorting: by size (largest first for fewer moves)
+        donor_units.sort(key=lambda u: u.size_bytes, reverse=True)
+    elif strategy == 'space':
+        # New sorting: prioritize units from high-fill disks, then by size
+        donor_units.sort(key=lambda u: (
+            disk_lookup[u.src_disk].fill_percentage,
+            u.size_bytes
+        ), reverse=True)
+    else:
+        raise ValueError(f"Unknown sorting strategy: {strategy}")
 
     # Sort recipients by most capacity needed first
     recipient_list = sorted(recipients.items(), key=lambda kv: kv[1], reverse=True)
 
     moves: List[Move] = []
-
-    # Create disk lookup for efficiency
-    disk_lookup = {d.name: d for d in disks}
     
     # Greedy assignment: place each unit on the recipient that needs it most and fits
     for unit in donor_units:
