@@ -163,6 +163,20 @@ def human_bytes(n: int) -> str:
     return f"{n:.2f} PiB"
 
 
+def format_duration(seconds: float) -> str:
+    """Convert seconds to human-readable duration format."""
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    elif seconds < 3600:
+        minutes = int(seconds // 60)
+        secs = int(seconds % 60)
+        return f"{minutes}m {secs}s"
+    else:
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        return f"{hours}h {minutes}m"
+
+
 def run(cmd: List[str], dry_run: bool = False) -> int:
     """Execute a command, optionally in dry-run mode."""
     cmd_str = " ".join(shlex.quote(c) for c in cmd)
@@ -700,10 +714,16 @@ class PerformanceMonitor:
             
             progress_percent = (completed_files / total_files * 100) if total_files > 0 else 0
             
-            # Calculate ETA based on current transfer rate
+            # Calculate ETA using enhanced methods
             eta_seconds = None
-            if self.operation.average_transfer_rate_bps > 0:
-                remaining_bytes = total_bytes - transferred_bytes
+            remaining_bytes = total_bytes - transferred_bytes
+
+            # Try to use the enhanced real-time ETA calculation
+            if hasattr(self, 'update_real_time_eta') and remaining_bytes > 0:
+                eta_seconds = self.update_real_time_eta(transferred_bytes, remaining_bytes)
+
+            # Fallback to basic calculation if enhanced method not available or returns None
+            if eta_seconds is None and self.operation.average_transfer_rate_bps > 0:
                 eta_seconds = remaining_bytes / self.operation.average_transfer_rate_bps
             
             # Get current system metrics
@@ -746,6 +766,76 @@ class PerformanceMonitor:
             self.cleanup()
         except:
             pass  # Ignore errors during cleanup
+
+    def calculate_initial_eta(self, plan, performance_models: Optional[Dict] = None) -> float:
+        """Calculate initial ETA based on plan size and drive performance models."""
+        try:
+            from performance_models import DRIVE_PERFORMANCE_MODELS, get_conservative_write_rate
+            if performance_models is None:
+                performance_models = DRIVE_PERFORMANCE_MODELS
+        except ImportError:
+            # Fallback if performance_models module not available
+            conservative_rate_mbps = 80.0  # Conservative fallback
+            total_bytes = sum(move.unit.size_bytes for move in plan.moves)
+            if total_bytes > 0:
+                estimated_rate_bps = conservative_rate_mbps * 1024 * 1024
+                eta_seconds = total_bytes / estimated_rate_bps
+                return eta_seconds
+            return 0.0
+
+        total_bytes = sum(move.unit.size_bytes for move in plan.moves)
+        if total_bytes == 0:
+            return 0.0
+
+        # Use conservative write rate from performance models
+        conservative_rate_mbps = get_conservative_write_rate()
+        estimated_rate_bps = conservative_rate_mbps * 1024 * 1024
+
+        eta_seconds = total_bytes / estimated_rate_bps
+        with self._lock:
+            self.initial_eta_seconds = eta_seconds
+        return eta_seconds
+
+    def update_real_time_eta(self, completed_bytes: int, remaining_bytes: int) -> Optional[float]:
+        """Update ETA based on recent transfer performance with smoothing."""
+        if remaining_bytes <= 0:
+            return 0.0
+
+        with self._lock:
+            # Get recent transfer rates for smoothing
+            recent_transfers = self.operation.transfers[-10:]  # Last 10 transfers
+            if not recent_transfers:
+                return getattr(self, 'current_eta_seconds', None)
+
+            # Calculate recent transfer rates
+            recent_rates = []
+            for transfer in recent_transfers:
+                if transfer.transfer_rate_bps and transfer.transfer_rate_bps > 0:
+                    recent_rates.append(transfer.transfer_rate_bps)
+
+            if not recent_rates:
+                return getattr(self, 'current_eta_seconds', None)
+
+            # Use weighted moving average, favoring recent samples
+            weights = [0.8 ** (len(recent_rates) - i - 1) for i in range(len(recent_rates))]
+            weighted_sum = sum(rate * weight for rate, weight in zip(recent_rates, weights))
+            weight_sum = sum(weights)
+
+            if weight_sum > 0:
+                smoothed_rate_bps = weighted_sum / weight_sum
+                eta_seconds = remaining_bytes / smoothed_rate_bps
+                self.current_eta_seconds = eta_seconds
+                return eta_seconds
+
+        return getattr(self, 'current_eta_seconds', None)
+
+    def get_eta_info(self) -> Dict[str, Optional[float]]:
+        """Get current ETA information."""
+        with self._lock:
+            return {
+                'initial_eta_seconds': getattr(self, 'initial_eta_seconds', None),
+                'current_eta_seconds': getattr(self, 'current_eta_seconds', None)
+            }
 
     def export_csv(self, filepath: Path):
         """Export transfer metrics to CSV file."""
@@ -1581,8 +1671,7 @@ def perform_plan(plan: Plan, execute: bool, rsync_extra: List[str], allow_merge:
                            f"| CPU: {progress['current_cpu_percent']:.1f}%")
 
             if progress['eta_seconds']:
-                eta_mins = int(progress['eta_seconds'] / 60)
-                progress_info += f" | ETA: {eta_mins}m"
+                progress_info += f" | ETA: {format_duration(progress['eta_seconds'])}"
 
         print(f"\n[{idx}/{len(plan.moves)}] Moving {m.unit.share}/{m.unit.rel_path} "
               f"from {m.unit.src_disk} -> {m.dest_disk} ({human_bytes(m.unit.size_bytes)}){progress_info}")
