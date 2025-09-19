@@ -1661,6 +1661,7 @@ def main():
     p.add_argument("--min-unit-size", type=parse_size, default=parse_size("1GiB"), help="Only move units >= this size (default 1GiB)")
     p.add_argument("--target-percent", type=float, default=80.0, help="Target maximum fill percent per disk (default 80). Use -1 to auto-even with headroom.")
     p.add_argument("--headroom-percent", type=float, default=5.0, help="Headroom percent when auto-evening (ignored if target-percent >= 0)")
+    p.add_argument("--prioritize-low-space", action="store_true", help="Prioritize moves from drives with least free space first")
     p.add_argument("--save-plan", help="Write plan JSON to this path")
     p.add_argument("--load-plan", help="Load plan from JSON and skip planning")
     p.add_argument("--execute", action="store_true", help="Execute moves (default is dry-run)")
@@ -2840,7 +2841,8 @@ def main():
 
         # Step 3: Build plan
         target_percent = None if args.target_percent < 0 else args.target_percent
-        plan = build_plan(disks, units, target_percent=target_percent, headroom_percent=args.headroom_percent)
+        strategy = 'space' if args.prioritize_low_space else 'size'
+        plan = build_plan(disks, units, target_percent=target_percent, headroom_percent=args.headroom_percent, strategy=strategy)
         print(f"\nPlan: {len(plan.moves)} moves, {human_bytes(int(plan.summary['total_bytes']))} to re-distribute.")
         # Preview first few moves
         for i, m in enumerate(plan.moves[:20], 1):
