@@ -80,6 +80,9 @@ sudo ./unraid_rebalancer.py --target-percent -1 --headroom-percent 5 --execute
 
 # Exclude system shares and only move large files
 sudo ./unraid_rebalancer.py --exclude-shares appdata,System --min-unit-size 5GiB --execute
+
+# Prioritize moves from drives with least free space first
+sudo ./unraid_rebalancer.py --target-percent 80 --prioritize-low-space --execute
 ```
 
 ### Advanced Usage
@@ -126,6 +129,7 @@ sudo ./unraid_rebalancer.py --export-metrics metrics_20231201_120000.json
 |--------|-------------|----------|
 | `--target-percent` | Target maximum fill percentage per disk | 80.0 |
 | `--headroom-percent` | Headroom percentage for auto-balancing | 5.0 |
+| `--prioritize-low-space` | Prioritize moves from drives with least free space first | False |
 | `--execute` | Actually perform moves (default is dry-run) | False |
 | `--include-disks` | Comma-separated list of disks to include | All |
 | `--exclude-disks` | Comma-separated list of disks to exclude | None |
