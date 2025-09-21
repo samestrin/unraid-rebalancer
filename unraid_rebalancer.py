@@ -1687,7 +1687,19 @@ def du_path(path: Path) -> int:
 # ---------- Planning ----------
 
 def build_plan(disks: List[Disk], units: List[Unit], target_percent: Optional[float],
-               headroom_percent: float, strategy: str = 'size') -> Plan:
+               headroom_percent: float, strategy: str = 'size',
+               transfer_manager: Optional[TransferStateManager] = None) -> Plan:
+    # Detect and clean up orphaned transfers if transfer_manager provided
+    if transfer_manager:
+        current_plan_units = {f"{unit.share}/{unit.rel_path}" for unit in units}
+        orphaned_transfers = transfer_manager.get_orphaned_transfers(current_plan_units)
+
+        if orphaned_transfers:
+            logging.info(f"Found {len(orphaned_transfers)} orphaned transfers to clean up")
+            transfer_manager.cleanup_orphaned_transfers(orphaned_transfers)
+        else:
+            logging.info("No orphaned transfers found")
+
     # Compute targets
     # If target_percent provided, aim each disk to be <= target_percent and also
     # try to raise low disks to (100 - headroom_percent)
