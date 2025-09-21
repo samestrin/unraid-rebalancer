@@ -22,6 +22,7 @@ An intelligent disk rebalancing tool for Unraid servers that redistributes data 
 - **Flexible Targeting**: Target specific fill percentages or auto-balance with headroom
 - **Granular Control**: Configure allocation units at different directory depths
 - **Resume Support**: Uses rsync with partial transfer support for interrupted operations
+- **Transfer State Tracking**: Tracks ongoing transfers and automatically cleans up orphaned partial transfers
 - **Plan Management**: Save and load redistribution plans as JSON files
 - **Comprehensive Filtering**: Include/exclude specific disks, shares, and file patterns
 - **Progress Tracking**: Real-time progress reporting during operations
@@ -37,6 +38,7 @@ An intelligent disk rebalancing tool for Unraid servers that redistributes data 
 - **Preserves File Attributes**: Maintains permissions, timestamps, and hardlinks
 - **Efficient Transfers**: Uses rsync for reliable, resumable data movement
 - **Safety First**: Multiple safeguards prevent data loss
+- **Interruption Recovery**: Automatically resumes operations and cleans up orphaned transfers
 - **Flexible Configuration**: Extensive options for customization
 
 ## Installation
