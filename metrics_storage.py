@@ -431,7 +431,33 @@ class MetricsDatabase:
                 (operation_id,)
             ).fetchall()
             return [dict(row) for row in rows]
-    
+
+    def get_incomplete_transfers(self, operation_id: str) -> List[Dict[str, Any]]:
+        """Retrieve incomplete transfers (end_time is NULL) for a specific operation."""
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM transfers WHERE operation_id = ? AND end_time IS NULL ORDER BY start_time",
+                (operation_id,)
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def update_transfer(self, operation_id: str, unit_path: str, transfer_data: Dict[str, Any]) -> None:
+        """Update an existing transfer record."""
+        with self._get_connection() as conn:
+            # Build the SET clause dynamically based on provided data
+            set_clauses = []
+            params = []
+
+            for key, value in transfer_data.items():
+                if key in ['end_time', 'success', 'error_message', 'transfer_rate_bps', 'transfer_rate_mbps', 'duration_seconds']:
+                    set_clauses.append(f"{key} = ?")
+                    params.append(value)
+
+            if set_clauses:
+                query = f"UPDATE transfers SET {', '.join(set_clauses)} WHERE operation_id = ? AND unit_path = ?"
+                params.extend([operation_id, unit_path])
+                conn.execute(query, params)
+
     def delete_old_data(self, days: int = 30) -> int:
         """Delete data older than specified days. Returns number of operations deleted."""
         cutoff_timestamp = time.time() - (days * 24 * 60 * 60)

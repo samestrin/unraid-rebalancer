@@ -407,6 +407,203 @@ class OperationMetrics:
         }
 
 
+# ---------- Transfer State Tracking ----------
+
+@dataclasses.dataclass
+class TransferState:
+    """Represents the state of an individual transfer operation."""
+    unit_path: str                    # Relative path of the unit being transferred
+    src_disk: str                     # Source disk identifier
+    dest_disk: str                    # Destination disk identifier
+    size_bytes: int                   # Size of the transfer in bytes
+    start_time: float                 # Timestamp when transfer started
+    completed: bool = False           # Whether transfer completed successfully
+    error_message: Optional[str] = None  # Error message if transfer failed
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        return dataclasses.asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'TransferState':
+        """Create from dictionary."""
+        return cls(**data)
+
+    def is_in_progress(self) -> bool:
+        """Check if transfer is currently in progress."""
+        return not self.completed and self.error_message is None
+
+
+class TransferStateManager:
+    """Manages transfer state persistence and operations."""
+
+    def __init__(self, database: Optional['MetricsDatabase'], operation_id: str):
+        self.database = database
+        self.operation_id = operation_id
+        self._active_transfers: Dict[str, TransferState] = {}
+        self._lock = threading.Lock()
+
+    def start_transfer(self, unit_path: str, src_disk: str, dest_disk: str, size_bytes: int) -> TransferState:
+        """Start tracking a new transfer."""
+        with self._lock:
+            transfer = TransferState(
+                unit_path=unit_path,
+                src_disk=src_disk,
+                dest_disk=dest_disk,
+                size_bytes=size_bytes,
+                start_time=time.time(),
+                completed=False
+            )
+
+            transfer_key = f"{src_disk}:{unit_path}"
+            self._active_transfers[transfer_key] = transfer
+
+            # Store to database if available
+            if self.database:
+                try:
+                    self._store_transfer_to_db(transfer, in_progress=True)
+                except Exception as e:
+                    logging.error(f"Failed to store transfer to database: {e}")
+
+            logging.info(f"Started tracking transfer: {unit_path} from {src_disk} to {dest_disk}")
+            return transfer
+
+    def complete_transfer(self, transfer: TransferState, success: bool, error_message: Optional[str] = None) -> None:
+        """Mark a transfer as completed."""
+        with self._lock:
+            transfer.completed = True
+            if not success:
+                transfer.error_message = error_message
+
+            transfer_key = f"{transfer.src_disk}:{transfer.unit_path}"
+            if transfer_key in self._active_transfers:
+                del self._active_transfers[transfer_key]
+
+            # Update database if available
+            if self.database:
+                try:
+                    self._update_transfer_in_db(transfer, success, error_message)
+                except Exception as e:
+                    logging.error(f"Failed to update transfer in database: {e}")
+
+            status = "completed successfully" if success else f"failed: {error_message}"
+            logging.info(f"Transfer {status}: {transfer.unit_path}")
+
+    def get_active_transfers(self) -> List[TransferState]:
+        """Get all currently active transfers."""
+        with self._lock:
+            return list(self._active_transfers.values())
+
+    def get_orphaned_transfers(self, current_plan_units: Set[str]) -> List[TransferState]:
+        """Detect transfers that are no longer in the current plan."""
+        orphaned = []
+
+        if not self.database:
+            return orphaned
+
+        try:
+            # Query database for incomplete transfers
+            incomplete_transfers = self._get_incomplete_transfers_from_db()
+
+            for transfer in incomplete_transfers:
+                if transfer.unit_path not in current_plan_units:
+                    orphaned.append(transfer)
+
+        except Exception as e:
+            logging.error(f"Failed to detect orphaned transfers: {e}")
+
+        return orphaned
+
+    def cleanup_orphaned_transfers(self, orphaned_transfers: List[TransferState]) -> None:
+        """Clean up partial transfers that are orphaned."""
+        for transfer in orphaned_transfers:
+            try:
+                # Mark as completed with error in database
+                self.complete_transfer(transfer, success=False, error_message="Orphaned transfer cleaned up")
+                logging.info(f"Cleaned up orphaned transfer: {transfer.unit_path}")
+            except Exception as e:
+                logging.error(f"Failed to cleanup orphaned transfer {transfer.unit_path}: {e}")
+
+    def load_existing_transfers(self) -> None:
+        """Load existing transfer states from database."""
+        if not self.database:
+            return
+
+        try:
+            incomplete_transfers = self._get_incomplete_transfers_from_db()
+            with self._lock:
+                for transfer in incomplete_transfers:
+                    transfer_key = f"{transfer.src_disk}:{transfer.unit_path}"
+                    self._active_transfers[transfer_key] = transfer
+
+            logging.info(f"Loaded {len(incomplete_transfers)} existing transfers from database")
+        except Exception as e:
+            logging.error(f"Failed to load existing transfers: {e}")
+
+    def _store_transfer_to_db(self, transfer: TransferState, in_progress: bool = False) -> None:
+        """Store transfer to database."""
+        if not self.database:
+            return
+
+        transfer_data = {
+            'operation_id': self.operation_id,
+            'unit_path': transfer.unit_path,
+            'src_disk': transfer.src_disk,
+            'dest_disk': transfer.dest_disk,
+            'size_bytes': transfer.size_bytes,
+            'start_time': transfer.start_time,
+            'end_time': None if in_progress else time.time(),
+            'success': False if in_progress else not bool(transfer.error_message),
+            'error_message': transfer.error_message,
+            'transfer_rate_bps': None,
+            'transfer_rate_mbps': None,
+            'duration_seconds': None if in_progress else 0.0
+        }
+
+        self.database.store_transfer(transfer_data)
+
+    def _update_transfer_in_db(self, transfer: TransferState, success: bool, error_message: Optional[str]) -> None:
+        """Update transfer in database."""
+        if not self.database:
+            return
+
+        transfer_data = {
+            'end_time': time.time(),
+            'success': success,
+            'error_message': error_message
+        }
+
+        # Use a combination of operation_id and unit_path to identify the transfer
+        self.database.update_transfer(self.operation_id, transfer.unit_path, transfer_data)
+
+    def _get_incomplete_transfers_from_db(self) -> List[TransferState]:
+        """Get incomplete transfers from database."""
+        if not self.database:
+            return []
+
+        try:
+            # Query for transfers with NULL end_time (incomplete)
+            incomplete_data = self.database.get_incomplete_transfers(self.operation_id)
+
+            transfers = []
+            for data in incomplete_data:
+                transfer = TransferState(
+                    unit_path=data['unit_path'],
+                    src_disk=data['src_disk'],
+                    dest_disk=data['dest_disk'],
+                    size_bytes=data['size_bytes'],
+                    start_time=data['start_time'],
+                    completed=False,
+                    error_message=data.get('error_message')
+                )
+                transfers.append(transfer)
+
+            return transfers
+        except Exception as e:
+            logging.error(f"Failed to get incomplete transfers from database: {e}")
+            return []
+
+
 class PerformanceMonitor:
     """Real-time performance monitoring and metrics collection with SQLite storage."""
 
@@ -447,9 +644,14 @@ class PerformanceMonitor:
         self._last_network_io = psutil.net_io_counters() if psutil.net_io_counters() else None
         self._last_sample_time = time.time()
         
+        # Initialize transfer state manager
+        self.transfer_manager = TransferStateManager(self.database, operation_id)
+
         # Store initial operation data if using SQLite
         if self.database and self.metrics_enabled:
             self._store_operation_to_db()
+            # Load existing transfers from previous interrupted operations
+            self.transfer_manager.load_existing_transfers()
 
     def _store_operation_to_db(self):
         """Store operation data to SQLite database."""
@@ -702,6 +904,27 @@ class PerformanceMonitor:
             self._update_operation_in_db()
             if error_message:
                 self._store_error_to_db(f"{transfer.unit_path}: {error_message}")
+
+    def start_transfer_state_tracking(self, unit: Unit, dest_disk: str) -> TransferState:
+        """Start tracking transfer state for a unit."""
+        unit_path = f"{unit.share}/{unit.rel_path}"
+        return self.transfer_manager.start_transfer(unit_path, unit.src_disk, dest_disk, unit.size_bytes)
+
+    def complete_transfer_state_tracking(self, transfer_state: TransferState, success: bool, error_message: Optional[str] = None) -> None:
+        """Complete transfer state tracking."""
+        self.transfer_manager.complete_transfer(transfer_state, success, error_message)
+
+    def get_active_transfer_states(self) -> List[TransferState]:
+        """Get all currently active transfer states."""
+        return self.transfer_manager.get_active_transfers()
+
+    def get_orphaned_transfer_states(self, current_plan_units: Set[str]) -> List[TransferState]:
+        """Get orphaned transfer states."""
+        return self.transfer_manager.get_orphaned_transfers(current_plan_units)
+
+    def cleanup_orphaned_transfer_states(self, orphaned_transfers: List[TransferState]) -> None:
+        """Clean up orphaned transfer states."""
+        self.transfer_manager.cleanup_orphaned_transfers(orphaned_transfers)
 
     def get_progress_info(self) -> Dict[str, any]:
         """Get current progress information for display."""
