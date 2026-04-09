@@ -1355,10 +1355,10 @@ def _now_hms() -> str:
 
 def format_disk_table(disks: list[DiskInfo], max_used: int = DEFAULT_MAX_USED) -> str:
     """Format disk usage as a colored table."""
-    lines = []
-    header = f"{'Disk':<16} {'Total':>8} {'Used':>8} {'Free':>8} {'Use%':>6}"
+    lines = [ANSI.bold("Disk Summary:"), ""]
+    header = f"{'Disk':<16} {'Total':>8} {'Used':>8} {'Free':>8} {'Use%':>7}"
     lines.append(ANSI.bold(header))
-    lines.append("-" * 50)
+    lines.append("-" * 52)
     for d in disks:
         name = d.path.split("/")[-1]
         pct_str = f"{d.used_pct}%"
@@ -1371,7 +1371,7 @@ def format_disk_table(disks: list[DiskInfo], max_used: int = DEFAULT_MAX_USED) -
         lines.append(
             f"{name:<16} {format_bytes(d.total_bytes):>8} "
             f"{format_bytes(d.used_bytes):>8} {format_bytes(d.free_bytes):>8} "
-            f"{pct_str:>6}"
+            f"{pct_str:>7}"
         )
     return "\n".join(lines)
 

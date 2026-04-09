@@ -85,6 +85,25 @@ class TestFormatDiskTable:
         table = format_disk_table([])
         assert "Disk" in table  # header should still appear
 
+    def test_disk_summary_header_appears(self):
+        disks = [DiskInfo("/mnt/disk1", 1000, 900, 100, 90)]
+        table = format_disk_table(disks)
+        assert "Disk Summary:" in table
+
+    def test_blank_line_after_disk_summary_header(self):
+        disks = [DiskInfo("/mnt/disk1", 1000, 900, 100, 90)]
+        table = format_disk_table(disks)
+        lines = table.split("\n")
+        assert "Disk Summary:" in lines[0]
+        assert lines[1] == ""
+
+    def test_separator_line_at_least_52_chars(self):
+        disks = [DiskInfo("/mnt/disk1", 1000, 900, 100, 90)]
+        table = format_disk_table(disks)
+        sep_lines = [l for l in table.split("\n") if l.startswith("-")]
+        assert len(sep_lines) > 0
+        assert len(sep_lines[0]) >= 52
+
 
 class TestFormatPlanSummary:
     def test_counts_by_status(self):
