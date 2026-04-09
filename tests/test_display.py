@@ -100,6 +100,27 @@ class TestFormatDiskTable:
         assert "Disk Summary:" in lines[0]
         assert lines[1] == ""
 
+    def test_columns_aligned_with_ansi_colors(self):
+        """ANSI escape codes should not break Use% column alignment with header."""
+        import re
+        disks = [
+            DiskInfo("/mnt/disk1", 16_000_000_000_000, 14_000_000_000_000, 2_000_000_000_000, 97),
+            DiskInfo("/mnt/disk2", 16_000_000_000_000, 4_000_000_000_000, 12_000_000_000_000, 25),
+        ]
+        table = format_disk_table(disks, max_used=80)
+        lines = table.split("\n")
+        ansi_re = re.compile(r'\033\[[0-9;]*m')
+        sep_idx = next(i for i, l in enumerate(lines) if l.startswith("-"))
+        header_stripped = ansi_re.sub('', lines[sep_idx - 1])
+        data_lines = [l for l in lines[sep_idx + 1:] if l.strip()]
+        stripped_data = [ansi_re.sub('', l) for l in data_lines]
+        # Data lines should match header width
+        for i, line in enumerate(stripped_data):
+            assert len(line) == len(header_stripped), (
+                f"Data line {i} width {len(line)} != header width {len(header_stripped)}: "
+                f"'{line}' vs '{header_stripped}'"
+            )
+
     def test_separator_line_at_least_52_chars(self):
         disks = [DiskInfo("/mnt/disk1", 1000, 900, 100, 90)]
         table = format_disk_table(disks)
