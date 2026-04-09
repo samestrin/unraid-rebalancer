@@ -1093,6 +1093,8 @@ def transfer_unit(
     progress: bool = False,
     lsof_timeout: int = 120,
     phase_status: bool = False,
+    copy_rate: float | None = None,
+    verify_rate: float | None = None,
 ) -> TransferResult:
     """Execute three-phase transfer: copy -> verify -> delete source.
 
@@ -1162,7 +1164,10 @@ def transfer_unit(
 
         # Phase 1: rsync copy (idempotent — safe to re-run on partial target)
         if phase_status:
-            print(f"    {_now_hms()} Copying...")
+            copy_eta = ""
+            if copy_rate and copy_rate > 0:
+                copy_eta = f"  Est. {format_eta(entry.size_bytes / copy_rate)} @ {format_bytes(int(copy_rate))}/s"
+            print(f"    {_now_hms()} Copying...{copy_eta}")
         t_copy = time_mod.monotonic()
         rsync_cmd = ["rsync", "-aHP"]
         if bwlimit:
@@ -1183,7 +1188,10 @@ def transfer_unit(
 
         # Phase 2: checksum verification using --itemize-changes for reliable parsing
         if phase_status:
-            print(f"    {_now_hms()} Verifying...")
+            verify_eta = ""
+            if verify_rate and verify_rate > 0:
+                verify_eta = f"  Est. {format_eta(entry.size_bytes / verify_rate)} @ {format_bytes(int(verify_rate))}/s"
+            print(f"    {_now_hms()} Verifying...{verify_eta}")
         t_verify = time_mod.monotonic()
         verify = run_cmd(
             ["rsync", "-anc", "--itemize-changes", f"{entry.path}/", f"{target_path}/"],
