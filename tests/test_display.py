@@ -13,6 +13,7 @@ from rebalancer import (
     format_disk_table,
     format_plan_summary,
     format_plan_summary_db,
+    _format_status_breakdown,
     ANSI,
 )
 
@@ -99,6 +100,46 @@ class TestFormatDiskTable:
         assert "Disk Summary:" in lines[0]
         assert lines[1] == ""
 
+    def test_columns_aligned_with_ansi_colors(self):
+        """ANSI escape codes should not break Use% column alignment with header."""
+        import re
+        disks = [
+            DiskInfo("/mnt/disk1", 16_000_000_000_000, 14_000_000_000_000, 2_000_000_000_000, 97),
+            DiskInfo("/mnt/disk2", 16_000_000_000_000, 4_000_000_000_000, 12_000_000_000_000, 25),
+        ]
+        table = format_disk_table(disks, max_used=80)
+        lines = table.split("\n")
+        ansi_re = re.compile(r'\033\[[0-9;]*m')
+        sep_idx = next(i for i, l in enumerate(lines) if l.startswith("-"))
+        header_stripped = ansi_re.sub('', lines[sep_idx - 1])
+        data_lines = [l for l in lines[sep_idx + 1:] if l.strip()]
+        stripped_data = [ansi_re.sub('', l) for l in data_lines]
+        # Data lines should match header width
+        for i, line in enumerate(stripped_data):
+            assert len(line) == len(header_stripped), (
+                f"Data line {i} width {len(line)} != header width {len(header_stripped)}: "
+                f"'{line}' vs '{header_stripped}'"
+            )
+
+    def test_boundary_pct_alignment(self):
+        """0% and 100% should align correctly (boundary padding)."""
+        import re
+        disks = [
+            DiskInfo("/mnt/disk1", 1000, 1000, 0, 100),
+            DiskInfo("/mnt/disk2", 1000, 0, 1000, 0),
+        ]
+        table = format_disk_table(disks, max_used=80)
+        lines = table.split("\n")
+        ansi_re = re.compile(r'\033\[[0-9;]*m')
+        sep_idx = next(i for i, l in enumerate(lines) if l.startswith("-"))
+        header_stripped = ansi_re.sub('', lines[sep_idx - 1])
+        data_lines = [l for l in lines[sep_idx + 1:] if l.strip()]
+        for line in data_lines:
+            stripped = ansi_re.sub('', line)
+            assert len(stripped) == len(header_stripped), (
+                f"Boundary alignment failed: '{stripped}'"
+            )
+
     def test_separator_line_at_least_52_chars(self):
         disks = [DiskInfo("/mnt/disk1", 1000, 900, 100, 90)]
         table = format_disk_table(disks)
@@ -173,9 +214,46 @@ class TestFormatPlanSummary:
         assert "Skipped" not in summary
         assert "Error" not in summary
 
+    def test_remaining_includes_in_progress_bytes(self):
+        """Remaining should count both pending and in_progress entries."""
+        entries = [
+            PlanEntry("/a", 1_000_000_000, "/s", "/t", status="pending"),
+            PlanEntry("/b", 2_000_000_000, "/s", "/t", status="in_progress"),
+            PlanEntry("/c", 3_000_000_000, "/s", "/t", status="cleaned"),
+        ]
+        summary = format_plan_summary(entries)
+        # pending + in_progress = 3 GB = 2.8 GB formatted
+        assert "Remaining:" in summary
+        assert "2.8 GB" in summary
+
     def test_empty_plan_returns_no_plan_message(self):
         summary = format_plan_summary([])
         assert "No plan entries." in summary
+
+    def test_all_in_progress_remaining_equals_total(self):
+        """When all entries are in_progress, remaining should equal total size."""
+        entries = [
+            PlanEntry("/a", 1_000_000_000, "/s", "/t", status="in_progress"),
+            PlanEntry("/b", 2_000_000_000, "/s", "/t", status="in_progress"),
+        ]
+        summary = format_plan_summary(entries)
+        assert "Remaining:" in summary
+        # Total = 2.8 GB, Remaining should also be 2.8 GB
+        assert "Total size:" in summary
+        lines = summary.split("\n")
+        total_line = next(l for l in lines if "Total size:" in l)
+        remaining_line = next(l for l in lines if "Remaining:" in l)
+        # Both should show the same value
+        import re
+        total_val = re.search(r"Total size:\s+(.+)", total_line).group(1).strip()
+        remaining_val = re.search(r"Remaining:\s+(.+)", remaining_line).group(1).strip()
+        assert total_val == remaining_val
+
+    def test_no_eta_line_in_list_summary(self):
+        """List-based summary has no ETA — no throughput data at scan time."""
+        entries = [PlanEntry("/a", 1_000_000_000, "/s", "/t", status="pending")]
+        summary = format_plan_summary(entries)
+        assert "Estimated time:" not in summary
 
     def test_shows_total_bytes(self):
         entries = [PlanEntry("/a", 1_000_000_000_000, "/s", "/t", status="pending")]
@@ -191,31 +269,31 @@ class TestFormatPlanSummaryDB:
         assert "Plan Summary:" in summary
         db.close()
 
-    def test_active_dir_count_shown(self, state_dir, db_path):
+    def test_session_transfer_limit_shown(self, state_dir, db_path):
         db = PlanDB(db_path)
         db.write_plan([
             PlanEntry("/a", 100, "/s", "/t", status="in_progress"),
             PlanEntry("/b", 200, "/s", "/t", status="pending"),
         ])
-        db.set_meta("active_dir_count", "3")
+        db.set_meta("session_transfer_limit", "3")
         summary = format_plan_summary_db(db)
-        assert "[3 active]" in summary
+        assert "[limit: 3]" in summary
         db.close()
 
-    def test_active_suffix_only_on_in_progress(self, state_dir, db_path):
+    def test_limit_suffix_only_on_in_progress(self, state_dir, db_path):
         db = PlanDB(db_path)
         db.write_plan([PlanEntry("/a", 100, "/s", "/t", status="pending")])
-        db.set_meta("active_dir_count", "2")
+        db.set_meta("session_transfer_limit", "2")
         summary = format_plan_summary_db(db)
-        assert "[2 active]" not in summary
+        assert "[limit: 2]" not in summary
         db.close()
 
-    def test_no_meta_key_no_active_suffix(self, state_dir, db_path):
+    def test_no_meta_key_no_limit_suffix(self, state_dir, db_path):
         db = PlanDB(db_path)
         db.write_plan([PlanEntry("/a", 100, "/s", "/t", status="in_progress")])
         summary = format_plan_summary_db(db)
         assert "  In Progress" in summary
-        assert "[active]" not in summary
+        assert "[limit:" not in summary
         db.close()
 
     def test_percentages_sum_to_100(self, state_dir, db_path):
@@ -243,8 +321,51 @@ class TestFormatPlanSummaryDB:
         assert remaining_idx < eta_idx
         db.close()
 
+    def test_no_throughput_data_omits_eta(self, state_dir, db_path):
+        """When no throughput history exists, ETA line should not appear."""
+        db = PlanDB(db_path)
+        db.write_plan([PlanEntry("/a", 1_000_000_000, "/s", "/t", status="pending")])
+        summary = format_plan_summary_db(db)
+        assert "Estimated time:" not in summary
+        db.close()
+
+    def test_remaining_includes_in_progress_bytes_db(self, state_dir, db_path):
+        """DB-based remaining should count both pending and in_progress."""
+        db = PlanDB(db_path)
+        db.write_plan([
+            PlanEntry("/a", 1_000_000_000, "/s", "/t", status="pending"),
+            PlanEntry("/b", 2_000_000_000, "/s", "/t", status="in_progress"),
+            PlanEntry("/c", 3_000_000_000, "/s", "/t", status="cleaned"),
+        ])
+        summary = format_plan_summary_db(db)
+        assert "Remaining:" in summary
+        assert "2.8 GB" in summary
+        db.close()
+
     def test_empty_plan_returns_no_plan_message(self, state_dir, db_path):
         db = PlanDB(db_path)
         summary = format_plan_summary_db(db)
         assert "No plan entries." in summary
         db.close()
+
+
+    def test_no_limit_suffix_without_limit_flag(self, state_dir, db_path):
+        """When no --limit is used, session_transfer_limit should not be set."""
+        db = PlanDB(db_path)
+        db.write_plan([PlanEntry("/a", 100, "/s", "/t", status="in_progress")])
+        # No session_transfer_limit meta key set
+        summary = format_plan_summary_db(db)
+        assert "[limit:" not in summary
+        db.close()
+
+
+class TestFormatStatusBreakdown:
+    def test_zero_total_entries_with_nonzero_count_no_crash(self):
+        """Should not raise ZeroDivisionError when total_entries is 0."""
+        result = _format_status_breakdown({"pending": 1}, total_entries=0)
+        assert result == []
+
+    def test_zero_total_entries_with_zero_counts(self):
+        """Zero total with zero counts should return empty list."""
+        result = _format_status_breakdown({"pending": 0}, total_entries=0)
+        assert result == []

@@ -433,10 +433,11 @@ class PlanDB:
         ).fetchone()
         return row[0]
 
-    def pending_bytes(self) -> int:
-        """Sum of pending entry sizes."""
+    def remaining_bytes(self) -> int:
+        """Sum of pending and in_progress entry sizes (all unfinished work)."""
         row = self.conn.execute(
-            "SELECT COALESCE(SUM(size_bytes), 0) FROM plan WHERE status = 'pending'"
+            "SELECT COALESCE(SUM(size_bytes), 0) FROM plan "
+            "WHERE status IN ('pending', 'in_progress')"
         ).fetchone()
         return row[0]
 
@@ -1361,17 +1362,19 @@ def format_disk_table(disks: list[DiskInfo], max_used: int = DEFAULT_MAX_USED) -
     lines.append("-" * 52)
     for d in disks:
         name = d.path.split("/")[-1]
-        pct_str = f"{d.used_pct}%"
+        # Pad the raw string before wrapping in ANSI color to avoid
+        # escape codes inflating the visible width calculation
+        pct_padded = f"{d.used_pct}%".rjust(5)
         if d.used_pct > max_used:
-            pct_str = ANSI.red(pct_str)
+            pct_display = ANSI.red(pct_padded)
         elif d.used_pct > max_used - 10:
-            pct_str = ANSI.yellow(pct_str)
+            pct_display = ANSI.yellow(pct_padded)
         else:
-            pct_str = ANSI.green(pct_str)
+            pct_display = ANSI.green(pct_padded)
         lines.append(
             f"{name:<16} {format_bytes(d.total_bytes):>8} "
             f"{format_bytes(d.used_bytes):>8} {format_bytes(d.free_bytes):>8} "
-            f"{pct_str:>7}"
+            f"  {pct_display}"
         )
     return "\n".join(lines)
 
@@ -1387,6 +1390,8 @@ def _format_status_breakdown(
     active_suffix: str | None = None,
 ) -> list[str]:
     """Format status breakdown lines with percentages."""
+    if total_entries == 0:
+        return []
     always_show = {"pending", "in_progress", "cleaned"}
     status_order = (
         "pending",
@@ -1419,13 +1424,18 @@ def _format_status_breakdown(
 
 
 def format_plan_summary(entries: list[PlanEntry]) -> str:
-    """Format plan statistics summary."""
+    """Format plan statistics summary.
+
+    No ETA is shown because this is called at scan time before any transfers,
+    so there is no throughput history. See format_plan_summary_db() for the
+    DB-based variant that includes ETA when throughput data is available.
+    """
     if not entries:
         return "No plan entries."
     total_entries = len(entries)
     counts = Counter(e.status for e in entries)
     total_bytes = sum(e.size_bytes for e in entries)
-    pending_bytes = sum(e.size_bytes for e in entries if e.status == "pending")
+    pending_bytes = sum(e.size_bytes for e in entries if e.status in ("pending", "in_progress"))
 
     lines = [ANSI.bold("Plan Summary:"), ""]
     lines.append(f"  Total entries:    {total_entries}")
@@ -1591,8 +1601,8 @@ def format_plan_summary_db(db: PlanDB) -> str:
         return "No plan entries."
     total_entries = sum(counts.values())
     total_bytes = db.total_bytes()
-    pending_bytes = db.pending_bytes()
-    active_count = db.get_meta("active_dir_count")
+    pending_bytes = db.remaining_bytes()
+    active_count = db.get_meta("session_transfer_limit")
 
     lines = [ANSI.bold("Plan Summary:"), ""]
     lines.append(f"  Total entries:    {total_entries}")
@@ -1606,7 +1616,7 @@ def format_plan_summary_db(db: PlanDB) -> str:
 
     active_suffix = None
     if active_count and counts.get("in_progress", 0) > 0:
-        active_suffix = f"{active_count} active"
+        active_suffix = f"limit: {active_count}"
     lines.extend(_format_status_breakdown(counts, total_entries, active_suffix))
     return "\n".join(lines)
 
@@ -1869,7 +1879,8 @@ def _run_with_db(args, db, excludes, drives_path, log_path) -> int:
     completed = 0
 
     limit = args.limit if args.limit > 0 else total
-    db.set_meta("active_dir_count", str(limit))
+    if args.limit > 0:
+        db.set_meta("session_transfer_limit", str(limit))
     print(f"\nStarting transfers: {total} pending" +
           (f" (limit: {limit})" if args.limit > 0 else ""))
     try:
@@ -1963,7 +1974,7 @@ def _run_with_db(args, db, excludes, drives_path, log_path) -> int:
             if completed > 0 and completed % 50 == 0:
                 db.checkpoint()
     finally:
-        db.delete_meta("active_dir_count")
+        db.delete_meta("session_transfer_limit")
 
     # --- Summary ---
     print(f"\n{format_plan_summary_db(db)}")
