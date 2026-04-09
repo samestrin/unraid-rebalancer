@@ -8,6 +8,7 @@ from rebalancer import (
     PlanEntry,
     classify_disks,
     generate_plan,
+    select_best_strategy,
     STRATEGIES,
 )
 
@@ -297,6 +298,20 @@ class TestGeneratePlan:
         assert "largest-first" in STRATEGIES
         assert "smallest-first" in STRATEGIES
         assert "auto" not in STRATEGIES
+
+    def test_select_best_strategy_returns_name_and_plan(self):
+        """select_best_strategy should return (strategy_name, plan) tuple."""
+        disks = [
+            DiskInfo("/mnt/disk1", 1_000_000, 900_000, 100_000, 90),
+            DiskInfo("/mnt/disk2", 1_000_000, 200_000, 800_000, 20),
+        ]
+        units = [
+            MovableUnit("/mnt/disk1/TV_Shows/A", "TV_Shows", "A", 50_000, "/mnt/disk1"),
+        ]
+        over, under = classify_disks(disks, max_used=80)
+        name, plan = select_best_strategy(units, over, under, max_used=80, min_free=0)
+        assert name in STRATEGIES
+        assert len(plan) > 0
 
     def test_fills_lowest_usage_target_first(self):
         """When multiple targets exist, fill the lowest-usage one first."""
