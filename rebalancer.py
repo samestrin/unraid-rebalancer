@@ -1376,25 +1376,64 @@ def format_disk_table(disks: list[DiskInfo], max_used: int = DEFAULT_MAX_USED) -
     return "\n".join(lines)
 
 
+def _title_case_status(status: str) -> str:
+    """Convert snake_case status to Title Case label."""
+    return status.replace("_", " ").title()
+
+
+def _format_status_breakdown(
+    counts: dict[str, int],
+    total_entries: int,
+    active_suffix: str | None = None,
+) -> list[str]:
+    """Format status breakdown lines with percentages."""
+    always_show = {"pending", "in_progress", "cleaned"}
+    status_order = (
+        "pending",
+        "in_progress",
+        "cleaned",
+        "skipped",
+        "skipped_full",
+        "skipped_in_use",
+        "error_path",
+        "error_copy",
+        "error_verify",
+        "error_delete",
+        "error_timeout",
+    )
+    lines = []
+    for status in status_order:
+        count = counts.get(status, 0)
+        if count == 0 and status not in always_show:
+            continue
+        label = _title_case_status(status)
+        if count > 0:
+            pct = count / total_entries * 100
+            suffix = ""
+            if status == "in_progress" and active_suffix:
+                suffix = f"  [{active_suffix}]"
+            lines.append(f"  {label:<17} {count:>5}  ({pct:5.1f}%){suffix}")
+        else:
+            lines.append(f"  {label:<17} {count:>5}")
+    return lines
+
+
 def format_plan_summary(entries: list[PlanEntry]) -> str:
     """Format plan statistics summary."""
     if not entries:
         return "No plan entries."
+    total_entries = len(entries)
     counts = Counter(e.status for e in entries)
     total_bytes = sum(e.size_bytes for e in entries)
     pending_bytes = sum(e.size_bytes for e in entries if e.status == "pending")
-    lines = [
-        ANSI.bold("Plan Summary"),
-        f"  Total entries: {len(entries)}",
-        f"  Total size:    {format_bytes(total_bytes)}",
-    ]
-    for status in ("pending", "in_progress", "cleaned", "skipped",
-                    "skipped_full", "skipped_in_use", "error_path", "error_copy",
-                    "error_verify", "error_delete", "error_timeout"):
-        if counts.get(status, 0) > 0:
-            lines.append(f"  {status:<20} {counts[status]}")
+
+    lines = [ANSI.bold("Plan Summary:"), ""]
+    lines.append(f"  Total entries:    {total_entries}")
+    lines.append(f"  Total size:       {format_bytes(total_bytes)}")
     if pending_bytes > 0:
-        lines.append(f"  Remaining:     {format_bytes(pending_bytes)}")
+        lines.append(f"  Remaining:        {format_bytes(pending_bytes)}")
+    lines.append("")
+    lines.extend(_format_status_breakdown(counts, total_entries))
     return "\n".join(lines)
 
 

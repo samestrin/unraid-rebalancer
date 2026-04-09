@@ -106,24 +106,76 @@ class TestFormatDiskTable:
 
 
 class TestFormatPlanSummary:
-    def test_counts_by_status(self):
+    def test_plan_summary_header_with_colon(self):
+        entries = [PlanEntry("/a", 100, "/s", "/t", status="pending")]
+        summary = format_plan_summary(entries)
+        assert "Plan Summary:" in summary
+
+    def test_blank_line_after_header(self):
+        entries = [PlanEntry("/a", 100, "/s", "/t", status="pending")]
+        summary = format_plan_summary(entries)
+        lines = summary.split("\n")
+        assert any("Plan Summary:" in l for l in lines)
+        # Find header line index
+        hdr_idx = next(i for i, l in enumerate(lines) if "Plan Summary:" in l)
+        assert lines[hdr_idx + 1] == ""
+
+    def test_status_label_title_case(self):
+        entries = [
+            PlanEntry("/a", 100, "/s", "/t", status="pending"),
+            PlanEntry("/b", 200, "/s", "/t", status="in_progress"),
+            PlanEntry("/c", 300, "/s", "/t", status="cleaned"),
+        ]
+        summary = format_plan_summary(entries)
+        # Labels should be Title Case, not snake_case
+        assert "  Pending" in summary
+        assert "  In Progress" in summary
+        assert "  Cleaned" in summary
+        # Raw snake_case should not appear as a label
+        assert "\n  pending" not in summary
+        assert "\n  in_progress" not in summary
+
+    def test_percentage_format(self):
         entries = [
             PlanEntry("/a", 100, "/s", "/t", status="pending"),
             PlanEntry("/b", 200, "/s", "/t", status="pending"),
-            PlanEntry("/c", 300, "/s", "/t", status="completed"),
-            PlanEntry("/d", 400, "/s", "/t", status="cleaned"),
+            PlanEntry("/c", 300, "/s", "/t", status="cleaned"),
         ]
         summary = format_plan_summary(entries)
-        assert "pending" in summary.lower()
-        assert "2" in summary
+        # 2/3 = 66.7%, 1/3 = 33.3%
+        assert "( 66.7%)" in summary
+        assert "( 33.3%)" in summary
 
-    def test_empty_plan(self):
+    def test_remaining_before_status_breakdown(self):
+        entries = [
+            PlanEntry("/a", 1_000_000_000, "/s", "/t", status="pending"),
+            PlanEntry("/b", 2_000_000_000, "/s", "/t", status="cleaned"),
+        ]
+        summary = format_plan_summary(entries)
+        lines = summary.split("\n")
+        remaining_idx = next(i for i, l in enumerate(lines) if "Remaining:" in l)
+        pending_idx = next(i for i, l in enumerate(lines) if "  Pending" in l)
+        assert remaining_idx < pending_idx
+
+    def test_zero_count_always_show_statuses(self):
+        entries = [PlanEntry("/a", 100, "/s", "/t", status="pending")]
+        summary = format_plan_summary(entries)
+        # pending, in_progress, cleaned always shown
+        assert "  Pending" in summary
+        assert "  In Progress" in summary
+        assert "  Cleaned" in summary
+
+    def test_zero_count_skipped_statuses_omitted(self):
+        entries = [PlanEntry("/a", 100, "/s", "/t", status="pending")]
+        summary = format_plan_summary(entries)
+        assert "Skipped" not in summary
+        assert "Error" not in summary
+
+    def test_empty_plan_returns_no_plan_message(self):
         summary = format_plan_summary([])
-        assert "No plan" in summary
+        assert "No plan entries." in summary
 
     def test_shows_total_bytes(self):
-        entries = [
-            PlanEntry("/a", 1_000_000_000_000, "/s", "/t", status="pending"),
-        ]
+        entries = [PlanEntry("/a", 1_000_000_000_000, "/s", "/t", status="pending")]
         summary = format_plan_summary(entries)
         assert "TB" in summary or "GB" in summary
