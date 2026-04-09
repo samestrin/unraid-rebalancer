@@ -225,31 +225,31 @@ class TestFormatPlanSummaryDB:
         assert "Plan Summary:" in summary
         db.close()
 
-    def test_active_dir_count_shown(self, state_dir, db_path):
+    def test_session_transfer_limit_shown(self, state_dir, db_path):
         db = PlanDB(db_path)
         db.write_plan([
             PlanEntry("/a", 100, "/s", "/t", status="in_progress"),
             PlanEntry("/b", 200, "/s", "/t", status="pending"),
         ])
-        db.set_meta("active_dir_count", "3")
+        db.set_meta("session_transfer_limit", "3")
         summary = format_plan_summary_db(db)
-        assert "[3 active]" in summary
+        assert "[limit: 3]" in summary
         db.close()
 
-    def test_active_suffix_only_on_in_progress(self, state_dir, db_path):
+    def test_limit_suffix_only_on_in_progress(self, state_dir, db_path):
         db = PlanDB(db_path)
         db.write_plan([PlanEntry("/a", 100, "/s", "/t", status="pending")])
-        db.set_meta("active_dir_count", "2")
+        db.set_meta("session_transfer_limit", "2")
         summary = format_plan_summary_db(db)
-        assert "[2 active]" not in summary
+        assert "[limit: 2]" not in summary
         db.close()
 
-    def test_no_meta_key_no_active_suffix(self, state_dir, db_path):
+    def test_no_meta_key_no_limit_suffix(self, state_dir, db_path):
         db = PlanDB(db_path)
         db.write_plan([PlanEntry("/a", 100, "/s", "/t", status="in_progress")])
         summary = format_plan_summary_db(db)
         assert "  In Progress" in summary
-        assert "[active]" not in summary
+        assert "[limit:" not in summary
         db.close()
 
     def test_percentages_sum_to_100(self, state_dir, db_path):
