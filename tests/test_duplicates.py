@@ -7,6 +7,7 @@ import pytest
 from rebalancer import (
     MovableUnit,
     find_duplicates,
+    format_duplicates_report,
 )
 
 
@@ -73,3 +74,32 @@ class TestFindDuplicates:
         assert len(groups) == 1
         # Without disk_usage, sorted by path
         assert groups[0][0].disk == "/mnt/disk1"
+
+
+class TestFormatDuplicatesReport:
+    def test_empty_groups(self):
+        result = format_duplicates_report([], {})
+        assert "No duplicates found." in result
+
+    def test_single_group_shows_disks(self):
+        units = [
+            MovableUnit("/mnt/disk1/TV/ShowA", "TV", "ShowA", 1_000_000_000, "/mnt/disk1"),
+            MovableUnit("/mnt/disk2/TV/ShowA", "TV", "ShowA", 1_000_000_000, "/mnt/disk2"),
+        ]
+        groups = find_duplicates(units, disk_usage={"/mnt/disk1": 90, "/mnt/disk2": 50})
+        report = format_duplicates_report(groups, {"/mnt/disk1": 90, "/mnt/disk2": 50})
+        assert "TV/ShowA" in report
+        assert "disk1" in report
+        assert "disk2" in report
+        assert "DELETE" in report
+        assert "KEEP" in report
+
+    def test_shows_reclaimable_summary(self):
+        units = [
+            MovableUnit("/mnt/disk1/TV/ShowA", "TV", "ShowA", 1_000_000_000, "/mnt/disk1"),
+            MovableUnit("/mnt/disk2/TV/ShowA", "TV", "ShowA", 1_000_000_000, "/mnt/disk2"),
+        ]
+        groups = find_duplicates(units, disk_usage={"/mnt/disk1": 90, "/mnt/disk2": 50})
+        report = format_duplicates_report(groups, {"/mnt/disk1": 90, "/mnt/disk2": 50})
+        assert "1 duplicate" in report.lower()
+        assert "reclaimable" in report.lower()
