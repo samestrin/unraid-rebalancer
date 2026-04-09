@@ -419,6 +419,12 @@ class TestCheckRequiredTools:
 
 
 class TestStateDir:
+    def test_default_state_dir_is_persistent(self):
+        """Default STATE_DIR must point to Unraid persistent storage, not RAM."""
+        from rebalancer import STATE_DIR
+        from pathlib import Path
+        assert STATE_DIR == Path("/boot/config/plugins/rebalancer")
+
     def test_state_dir_flag_accepted(self):
         parser = build_parser()
         args = parser.parse_args(["--state-dir", "/tmp/custom"])
