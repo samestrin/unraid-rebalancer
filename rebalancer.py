@@ -1753,6 +1753,18 @@ def main(argv: list[str] | None = None) -> int:
                     print(format_disk_table(drives))
                     print()
                 print(format_plan_summary_db(db))
+
+                # Current transfer
+                in_progress = db.get_all(status_filter="in_progress")
+                if in_progress:
+                    print()
+                    print(format_transfer_table(in_progress, "Current Transfer:"))
+
+                # Up next
+                pending = db.get_pending()
+                if pending:
+                    print()
+                    print(format_transfer_table(pending[:5], "Up Next:"))
         return 0
 
     # --- Show plan mode (no lock needed) ---
