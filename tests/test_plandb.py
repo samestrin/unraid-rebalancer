@@ -229,7 +229,6 @@ class TestMigration:
 
     def test_migrate_no_csv(self, state_dir):
         from rebalancer import _migrate_csv_to_db
-        # No CSV, no DB — should be a no-op
         _migrate_csv_to_db(state_dir)
         assert not (state_dir / PLAN_DB_FILE).exists()
 
@@ -237,20 +236,16 @@ class TestMigration:
         from rebalancer import _migrate_csv_to_db, write_plan_csv
         csv_path = state_dir / "plan.csv"
         db_path = state_dir / PLAN_DB_FILE
-        # Create CSV with one entry
         write_plan_csv([PlanEntry("/csv", 100, "/s", "/t")], csv_path)
-        # Create DB with different entry
         db = PlanDB(db_path)
         db.write_plan([PlanEntry("/db", 200, "/s", "/t")])
         db.close()
-        # Migration should not overwrite DB
         _migrate_csv_to_db(state_dir)
         db = PlanDB(db_path)
         loaded = db.get_all()
         assert len(loaded) == 1
         assert loaded[0].path == "/db"
         db.close()
-        # CSV should still exist (not renamed since DB already existed)
         assert csv_path.exists()
 
     def test_migrate_empty_csv(self, state_dir):
@@ -274,3 +269,35 @@ class TestMigration:
         db.close()
         assert not csv_path.exists()
         assert (state_dir / "plan.csv.bak").exists()
+
+
+class TestPlanDBMeta:
+    def test_meta_table_created_on_init(self, state_dir, db_path):
+        db = PlanDB(db_path)
+        db.conn.execute("SELECT * FROM meta").fetchall()
+        db.close()
+
+    def test_set_and_get_meta(self, state_dir, db_path):
+        db = PlanDB(db_path)
+        db.set_meta("active_dir_count", "3")
+        assert db.get_meta("active_dir_count") == "3"
+        db.close()
+
+    def test_get_meta_missing_key(self, state_dir, db_path):
+        db = PlanDB(db_path)
+        assert db.get_meta("nonexistent") is None
+        db.close()
+
+    def test_set_meta_upserts(self, state_dir, db_path):
+        db = PlanDB(db_path)
+        db.set_meta("active_dir_count", "3")
+        db.set_meta("active_dir_count", "5")
+        assert db.get_meta("active_dir_count") == "5"
+        db.close()
+
+    def test_delete_meta_key(self, state_dir, db_path):
+        db = PlanDB(db_path)
+        db.set_meta("active_dir_count", "3")
+        db.delete_meta("active_dir_count")
+        assert db.get_meta("active_dir_count") is None
+        db.close()

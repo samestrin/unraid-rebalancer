@@ -27,7 +27,7 @@ from pathlib import Path
 # Constants
 # =============================================================================
 
-__version__ = "0.2.0"
+__version__ = "0.1.0"
 
 STATE_DIR = Path.home() / ".unraid-rebalancer"
 DEFAULT_MAX_USED = 80
@@ -347,6 +347,12 @@ class PlanDB:
                     timestamp       TEXT    NOT NULL
                 )
             """)
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS meta (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        """)
         self.conn.commit()
 
     def write_plan(self, entries: list[PlanEntry]) -> None:
@@ -433,6 +439,26 @@ class PlanDB:
             "SELECT COALESCE(SUM(size_bytes), 0) FROM plan WHERE status = 'pending'"
         ).fetchone()
         return row[0]
+
+    def set_meta(self, key: str, value: str) -> None:
+        """Set a metadata key-value pair (upsert)."""
+        with self.conn:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                (key, value),
+            )
+
+    def get_meta(self, key: str) -> str | None:
+        """Get a metadata value by key. Returns None if not found."""
+        row = self.conn.execute(
+            "SELECT value FROM meta WHERE key = ?", (key,)
+        ).fetchone()
+        return row[0] if row else None
+
+    def delete_meta(self, key: str) -> None:
+        """Delete a metadata key."""
+        with self.conn:
+            self.conn.execute("DELETE FROM meta WHERE key = ?", (key,))
 
     # --- Throughput tracking (private helpers + public per-table methods) ---
 
@@ -1329,10 +1355,10 @@ def _now_hms() -> str:
 
 def format_disk_table(disks: list[DiskInfo], max_used: int = DEFAULT_MAX_USED) -> str:
     """Format disk usage as a colored table."""
-    lines = []
-    header = f"{'Disk':<16} {'Total':>8} {'Used':>8} {'Free':>8} {'Use%':>6}"
+    lines = [ANSI.bold("Disk Summary:"), ""]
+    header = f"{'Disk':<16} {'Total':>8} {'Used':>8} {'Free':>8} {'Use%':>7}"
     lines.append(ANSI.bold(header))
-    lines.append("-" * 50)
+    lines.append("-" * 52)
     for d in disks:
         name = d.path.split("/")[-1]
         pct_str = f"{d.used_pct}%"
@@ -1345,30 +1371,69 @@ def format_disk_table(disks: list[DiskInfo], max_used: int = DEFAULT_MAX_USED) -
         lines.append(
             f"{name:<16} {format_bytes(d.total_bytes):>8} "
             f"{format_bytes(d.used_bytes):>8} {format_bytes(d.free_bytes):>8} "
-            f"{pct_str:>6}"
+            f"{pct_str:>7}"
         )
     return "\n".join(lines)
+
+
+def _title_case_status(status: str) -> str:
+    """Convert snake_case status to Title Case label."""
+    return status.replace("_", " ").title()
+
+
+def _format_status_breakdown(
+    counts: dict[str, int],
+    total_entries: int,
+    active_suffix: str | None = None,
+) -> list[str]:
+    """Format status breakdown lines with percentages."""
+    always_show = {"pending", "in_progress", "cleaned"}
+    status_order = (
+        "pending",
+        "in_progress",
+        "cleaned",
+        "skipped",
+        "skipped_full",
+        "skipped_in_use",
+        "error_path",
+        "error_copy",
+        "error_verify",
+        "error_delete",
+        "error_timeout",
+    )
+    lines = []
+    for status in status_order:
+        count = counts.get(status, 0)
+        if count == 0 and status not in always_show:
+            continue
+        label = _title_case_status(status)
+        if count > 0:
+            pct = count / total_entries * 100
+            suffix = ""
+            if status == "in_progress" and active_suffix:
+                suffix = f"  [{active_suffix}]"
+            lines.append(f"  {label:<17} {count:>5}  ({pct:5.1f}%){suffix}")
+        else:
+            lines.append(f"  {label:<17} {count:>5}")
+    return lines
 
 
 def format_plan_summary(entries: list[PlanEntry]) -> str:
     """Format plan statistics summary."""
     if not entries:
         return "No plan entries."
+    total_entries = len(entries)
     counts = Counter(e.status for e in entries)
     total_bytes = sum(e.size_bytes for e in entries)
     pending_bytes = sum(e.size_bytes for e in entries if e.status == "pending")
-    lines = [
-        ANSI.bold("Plan Summary"),
-        f"  Total entries: {len(entries)}",
-        f"  Total size:    {format_bytes(total_bytes)}",
-    ]
-    for status in ("pending", "in_progress", "cleaned", "skipped",
-                    "skipped_full", "skipped_in_use", "error_path", "error_copy",
-                    "error_verify", "error_delete", "error_timeout"):
-        if counts.get(status, 0) > 0:
-            lines.append(f"  {status:<20} {counts[status]}")
+
+    lines = [ANSI.bold("Plan Summary:"), ""]
+    lines.append(f"  Total entries:    {total_entries}")
+    lines.append(f"  Total size:       {format_bytes(total_bytes)}")
     if pending_bytes > 0:
-        lines.append(f"  Remaining:     {format_bytes(pending_bytes)}")
+        lines.append(f"  Remaining:        {format_bytes(pending_bytes)}")
+    lines.append("")
+    lines.extend(_format_status_breakdown(counts, total_entries))
     return "\n".join(lines)
 
 
@@ -1527,21 +1592,22 @@ def format_plan_summary_db(db: PlanDB) -> str:
     total_entries = sum(counts.values())
     total_bytes = db.total_bytes()
     pending_bytes = db.pending_bytes()
-    lines = [
-        ANSI.bold("Plan Summary"),
-        f"  Total entries: {total_entries}",
-        f"  Total size:    {format_bytes(total_bytes)}",
-    ]
-    for status in ("pending", "in_progress", "cleaned", "skipped",
-                    "skipped_full", "skipped_in_use", "error_path", "error_copy",
-                    "error_verify", "error_delete", "error_timeout"):
-        if counts.get(status, 0) > 0:
-            lines.append(f"  {status:<20} {counts[status]}")
+    active_count = db.get_meta("active_dir_count")
+
+    lines = [ANSI.bold("Plan Summary:"), ""]
+    lines.append(f"  Total entries:    {total_entries}")
+    lines.append(f"  Total size:       {format_bytes(total_bytes)}")
     if pending_bytes > 0:
-        lines.append(f"  Remaining:     {format_bytes(pending_bytes)}")
+        lines.append(f"  Remaining:        {format_bytes(pending_bytes)}")
         rate = db.avg_copy_throughput() or db.avg_throughput()
         if rate is not None and rate > 0:
-            lines.append(f"  Estimated time: {format_eta(pending_bytes / rate)}")
+            lines.append(f"  Estimated time:   {format_eta(pending_bytes / rate)}")
+    lines.append("")
+
+    active_suffix = None
+    if active_count and counts.get("in_progress", 0) > 0:
+        active_suffix = f"{active_count} active"
+    lines.extend(_format_status_breakdown(counts, total_entries, active_suffix))
     return "\n".join(lines)
 
 
@@ -1803,97 +1869,101 @@ def _run_with_db(args, db, excludes, drives_path, log_path) -> int:
     completed = 0
 
     limit = args.limit if args.limit > 0 else total
+    db.set_meta("active_dir_count", str(limit))
     print(f"\nStarting transfers: {total} pending" +
           (f" (limit: {limit})" if args.limit > 0 else ""))
-    for entry in pending:
-        if shutdown_requested():
-            print("\nShutdown requested. Exiting after current transfer.")
-            break
-
-        if completed >= limit:
-            print(f"\nLimit reached ({limit} transfers).")
-            break
-
-        # Active hours check
-        if not is_within_active_hours(args.active_hours):
-            print("Outside active hours. Waiting...")
-            while not is_within_active_hours(args.active_hours):
-                if shutdown_requested():
-                    break
-                time_mod.sleep(60)
+    try:
+        for entry in pending:
             if shutdown_requested():
+                print("\nShutdown requested. Exiting after current transfer.")
                 break
 
-        # Check if in use
-        if check_in_use(entry.path, remote=args.remote, timeout=args.lsof_timeout):
-            print(f"  SKIP (in use): {entry.path}")
-            db.update_status(entry.path, "skipped")
-            continue
+            if completed >= limit:
+                print(f"\nLimit reached ({limit} transfers).")
+                break
 
-        # Transfer
-        db.update_status(entry.path, "in_progress")
-        # Show share/item (e.g., "Movies/2023") and short disk names (e.g., "disk4")
-        parts = entry.path.split("/")
-        short_path = "/".join(parts[3:]) if len(parts) > 3 else os.path.basename(entry.path)
-        src_disk = entry.source_disk.split("/")[-1]
-        tgt_disk = entry.target_disk.split("/")[-1]
-        copy_rate = db.avg_copy_throughput() or db.avg_throughput()
-        last_rate = db.last_copy_throughput() or db.last_throughput()
-        verify_rate = db.avg_verify_throughput()
-        if copy_rate and copy_rate > 0:
-            eta_parts = [f"copy {format_eta(entry.size_bytes / copy_rate)}"]
-            if verify_rate and verify_rate > 0:
-                eta_parts.append(f"verify {format_eta(entry.size_bytes / verify_rate)}")
-            rate_str = f" @ {format_bytes(int(last_rate))}/s" if last_rate else ""
-            eta_str = f" \u2014 {', '.join(eta_parts)}{rate_str}"
-        else:
-            eta_str = " \u2014 no ETA"
-        print(f"  {_now_hms()} [{completed + 1}/{total}] Moving {short_path} "
-              f"({format_bytes(entry.size_bytes)}) "
-              f"{src_disk} -> {tgt_disk}{eta_str}")
+            # Active hours check
+            if not is_within_active_hours(args.active_hours):
+                print("Outside active hours. Waiting...")
+                while not is_within_active_hours(args.active_hours):
+                    if shutdown_requested():
+                        break
+                    time_mod.sleep(60)
+                if shutdown_requested():
+                    break
 
-        result = transfer_unit(
-            entry, remote=args.remote, min_free=args.min_free_space_bytes,
-            bwlimit=args.bwlimit, copy_timeout=args.copy_timeout,
-            verify_timeout=args.verify_timeout,
-            lsof_timeout=args.lsof_timeout,
-            progress=args.progress,
-            phase_status=True,
-        )
-        db.update_status(entry.path, result.status)
-        log_transfer(log_path, entry, result.status, detail=result.detail)
+            # Check if in use
+            if check_in_use(entry.path, remote=args.remote, timeout=args.lsof_timeout):
+                print(f"  SKIP (in use): {entry.path}")
+                db.update_status(entry.path, "skipped")
+                continue
 
-        if result == "skipped_full":
-            print(f"    {_now_hms()} SKIP (target disk full)")
-            continue
-        elif result == "skipped_in_use":
-            print(f"    {_now_hms()} SKIP (files in use before delete \u2014 data safe on both disks)")
-            continue
-        elif result == "cleaned":
-            completed += 1
-            # Record phase-specific throughput
-            if result.copy_seconds:
-                db.record_copy_throughput(entry.size_bytes, result.copy_seconds)
-            if result.verify_seconds:
-                db.record_verify_throughput(entry.size_bytes, result.verify_seconds)
-            db.record_throughput(entry.size_bytes,
-                                (result.copy_seconds or 0) + (result.verify_seconds or 0) + (result.delete_seconds or 0))
-            # Done line with phase breakdown
-            phase_parts = []
-            if result.copy_seconds is not None:
-                phase_parts.append(f"copy {format_eta(result.copy_seconds)}")
-            if result.verify_seconds is not None:
-                phase_parts.append(f"verify {format_eta(result.verify_seconds)}")
-            phase_str = f" \u2014 {', '.join(phase_parts)}" if phase_parts else ""
-            print(f"    {_now_hms()} Done ({format_bytes(entry.size_bytes)}{phase_str})")
-        else:
-            print(f"    {_now_hms()} {ANSI.red(f'FAILED: {result.status}')}")
-            if result.detail:
-                print(f"    stderr: {result.detail[:200]}")
+            # Transfer
+            db.update_status(entry.path, "in_progress")
+            # Show share/item (e.g., "Movies/2023") and short disk names (e.g., "disk4")
+            parts = entry.path.split("/")
+            short_path = "/".join(parts[3:]) if len(parts) > 3 else os.path.basename(entry.path)
+            src_disk = entry.source_disk.split("/")[-1]
+            tgt_disk = entry.target_disk.split("/")[-1]
+            copy_rate = db.avg_copy_throughput() or db.avg_throughput()
+            last_rate = db.last_copy_throughput() or db.last_throughput()
+            verify_rate = db.avg_verify_throughput()
+            if copy_rate and copy_rate > 0:
+                eta_parts = [f"copy {format_eta(entry.size_bytes / copy_rate)}"]
+                if verify_rate and verify_rate > 0:
+                    eta_parts.append(f"verify {format_eta(entry.size_bytes / verify_rate)}")
+                rate_str = f" @ {format_bytes(int(last_rate))}/s" if last_rate else ""
+                eta_str = f" \u2014 {', '.join(eta_parts)}{rate_str}"
+            else:
+                eta_str = " \u2014 no ETA"
+            print(f"  {_now_hms()} [{completed + 1}/{total}] Moving {short_path} "
+                  f"({format_bytes(entry.size_bytes)}) "
+                  f"{src_disk} -> {tgt_disk}{eta_str}")
 
-        # Periodic WAL checkpoint to reclaim space during long runs
-        if completed > 0 and completed % 50 == 0:
-            db.checkpoint()
+            result = transfer_unit(
+                entry, remote=args.remote, min_free=args.min_free_space_bytes,
+                bwlimit=args.bwlimit, copy_timeout=args.copy_timeout,
+                verify_timeout=args.verify_timeout,
+                lsof_timeout=args.lsof_timeout,
+                progress=args.progress,
+                phase_status=True,
+            )
+            db.update_status(entry.path, result.status)
+            log_transfer(log_path, entry, result.status, detail=result.detail)
+
+            if result == "skipped_full":
+                print(f"    {_now_hms()} SKIP (target disk full)")
+                continue
+            elif result == "skipped_in_use":
+                print(f"    {_now_hms()} SKIP (files in use before delete \u2014 data safe on both disks)")
+                continue
+            elif result == "cleaned":
+                completed += 1
+                # Record phase-specific throughput
+                if result.copy_seconds:
+                    db.record_copy_throughput(entry.size_bytes, result.copy_seconds)
+                if result.verify_seconds:
+                    db.record_verify_throughput(entry.size_bytes, result.verify_seconds)
+                db.record_throughput(entry.size_bytes,
+                                    (result.copy_seconds or 0) + (result.verify_seconds or 0) + (result.delete_seconds or 0))
+                # Done line with phase breakdown
+                phase_parts = []
+                if result.copy_seconds is not None:
+                    phase_parts.append(f"copy {format_eta(result.copy_seconds)}")
+                if result.verify_seconds is not None:
+                    phase_parts.append(f"verify {format_eta(result.verify_seconds)}")
+                phase_str = f" \u2014 {', '.join(phase_parts)}" if phase_parts else ""
+                print(f"    {_now_hms()} Done ({format_bytes(entry.size_bytes)}{phase_str})")
+            else:
+                print(f"    {_now_hms()} {ANSI.red(f'FAILED: {result.status}')}")
+                if result.detail:
+                    print(f"    stderr: {result.detail[:200]}")
+
+            # Periodic WAL checkpoint to reclaim space during long runs
+            if completed > 0 and completed % 50 == 0:
+                db.checkpoint()
+    finally:
+        db.delete_meta("active_dir_count")
 
     # --- Summary ---
     print(f"\n{format_plan_summary_db(db)}")
