@@ -1879,7 +1879,8 @@ def _run_with_db(args, db, excludes, drives_path, log_path) -> int:
     completed = 0
 
     limit = args.limit if args.limit > 0 else total
-    db.set_meta("session_transfer_limit", str(limit))
+    if args.limit > 0:
+        db.set_meta("session_transfer_limit", str(limit))
     print(f"\nStarting transfers: {total} pending" +
           (f" (limit: {limit})" if args.limit > 0 else ""))
     try:

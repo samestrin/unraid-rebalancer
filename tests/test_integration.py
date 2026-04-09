@@ -205,8 +205,11 @@ class TestFullPipeline:
         result = main(["--status"])
         assert result == 0
         output = capsys.readouterr().out
-        assert "pending" in output.lower()
-        assert "cleaned" in output.lower()
+        assert "Plan Summary:" in output
+        assert "Pending" in output
+        assert "Cleaned" in output
+        assert "Total entries:" in output
+        assert "%" in output
 
     def test_limit_stops_after_n_transfers(self, state_dir, db_path, mocker, capsys):
         mocker.patch("rebalancer.STATE_DIR", state_dir)
@@ -365,5 +368,37 @@ class TestSessionTransferLimit:
         assert result == 0
 
         db = PlanDB(db_path)
-        assert db.get_meta("active_dir_count") is None
+        assert db.get_meta("session_transfer_limit") is None
         db.close()
+
+    def test_no_limit_flag_does_not_set_meta(self, state_dir, db_path, mocker, capsys):
+        """Without --limit, session_transfer_limit should never be set."""
+        mocker.patch("rebalancer.STATE_DIR", state_dir)
+        mocker.patch("rebalancer.setup_signal_handlers")
+        mocker.patch("rebalancer.shutdown_requested", return_value=False)
+        mocker.patch("rebalancer.is_within_active_hours", return_value=True)
+        mocker.patch("rebalancer.check_in_use", return_value=False)
+
+        # Capture set_meta calls to verify the key is never written
+        original_set_meta = PlanDB.set_meta
+        set_meta_keys = []
+
+        def tracking_set_meta(self_db, key, value):
+            set_meta_keys.append(key)
+            return original_set_meta(self_db, key, value)
+
+        mocker.patch.object(PlanDB, "set_meta", tracking_set_meta)
+        mocker.patch("rebalancer.transfer_unit", return_value=TransferResult("cleaned"))
+
+        db = PlanDB(db_path)
+        db.write_plan([
+            PlanEntry("/mnt/disk1/A", 100, "/mnt/disk1", "/mnt/disk3", status="pending"),
+        ])
+        db.close()
+
+        mocker.patch("rebalancer.discover_disks")
+        mocker.patch("rebalancer.scan_movable_units")
+
+        result = main(["--yes"])
+        assert result == 0
+        assert "session_transfer_limit" not in set_meta_keys

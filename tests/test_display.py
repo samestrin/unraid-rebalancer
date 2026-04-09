@@ -121,6 +121,25 @@ class TestFormatDiskTable:
                 f"'{line}' vs '{header_stripped}'"
             )
 
+    def test_boundary_pct_alignment(self):
+        """0% and 100% should align correctly (boundary padding)."""
+        import re
+        disks = [
+            DiskInfo("/mnt/disk1", 1000, 1000, 0, 100),
+            DiskInfo("/mnt/disk2", 1000, 0, 1000, 0),
+        ]
+        table = format_disk_table(disks, max_used=80)
+        lines = table.split("\n")
+        ansi_re = re.compile(r'\033\[[0-9;]*m')
+        sep_idx = next(i for i, l in enumerate(lines) if l.startswith("-"))
+        header_stripped = ansi_re.sub('', lines[sep_idx - 1])
+        data_lines = [l for l in lines[sep_idx + 1:] if l.strip()]
+        for line in data_lines:
+            stripped = ansi_re.sub('', line)
+            assert len(stripped) == len(header_stripped), (
+                f"Boundary alignment failed: '{stripped}'"
+            )
+
     def test_separator_line_at_least_52_chars(self):
         disks = [DiskInfo("/mnt/disk1", 1000, 900, 100, 90)]
         table = format_disk_table(disks)
@@ -210,6 +229,25 @@ class TestFormatPlanSummary:
     def test_empty_plan_returns_no_plan_message(self):
         summary = format_plan_summary([])
         assert "No plan entries." in summary
+
+    def test_all_in_progress_remaining_equals_total(self):
+        """When all entries are in_progress, remaining should equal total size."""
+        entries = [
+            PlanEntry("/a", 1_000_000_000, "/s", "/t", status="in_progress"),
+            PlanEntry("/b", 2_000_000_000, "/s", "/t", status="in_progress"),
+        ]
+        summary = format_plan_summary(entries)
+        assert "Remaining:" in summary
+        # Total = 2.8 GB, Remaining should also be 2.8 GB
+        assert "Total size:" in summary
+        lines = summary.split("\n")
+        total_line = next(l for l in lines if "Total size:" in l)
+        remaining_line = next(l for l in lines if "Remaining:" in l)
+        # Both should show the same value
+        import re
+        total_val = re.search(r"Total size:\s+(.+)", total_line).group(1).strip()
+        remaining_val = re.search(r"Remaining:\s+(.+)", remaining_line).group(1).strip()
+        assert total_val == remaining_val
 
     def test_no_eta_line_in_list_summary(self):
         """List-based summary has no ETA — no throughput data at scan time."""
@@ -308,6 +346,16 @@ class TestFormatPlanSummaryDB:
         db = PlanDB(db_path)
         summary = format_plan_summary_db(db)
         assert "No plan entries." in summary
+        db.close()
+
+
+    def test_no_limit_suffix_without_limit_flag(self, state_dir, db_path):
+        """When no --limit is used, session_transfer_limit should not be set."""
+        db = PlanDB(db_path)
+        db.write_plan([PlanEntry("/a", 100, "/s", "/t", status="in_progress")])
+        # No session_transfer_limit meta key set
+        summary = format_plan_summary_db(db)
+        assert "[limit:" not in summary
         db.close()
 
 
