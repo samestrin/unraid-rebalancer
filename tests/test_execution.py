@@ -722,6 +722,63 @@ class TestProgressMode:
         rsync_calls = [c for c in calls if "rsync" in c]
         assert not any("--info=progress2" in c for c in rsync_calls)
 
+
+class TestPhaseStatusOutput:
+    def test_copy_phase_shows_eta_and_rate(self, mocker, capsys):
+        """Copying line should show Est. ETA and rate when copy_rate provided."""
+        mock_run, _ = TestTransferUnit()._make_mock_run()
+        mocker.patch("rebalancer.run_cmd", side_effect=mock_run)
+        entry = PlanEntry("/mnt/disk1/TV_Shows/Show", 1_000_000_000, "/mnt/disk1", "/mnt/disk10")
+        transfer_unit(entry, phase_status=True, copy_rate=50_000_000.0)
+        output = capsys.readouterr().out
+        assert "Copying..." in output
+        assert "Est." in output
+        assert "/s" in output
+
+    def test_verify_phase_shows_eta_and_rate(self, mocker, capsys):
+        """Verifying line should show Est. ETA and rate when verify_rate provided."""
+        mock_run, _ = TestTransferUnit()._make_mock_run()
+        mocker.patch("rebalancer.run_cmd", side_effect=mock_run)
+        entry = PlanEntry("/mnt/disk1/TV_Shows/Show", 1_000_000_000, "/mnt/disk1", "/mnt/disk10")
+        transfer_unit(entry, phase_status=True, verify_rate=80_000_000.0)
+        output = capsys.readouterr().out
+        assert "Verifying..." in output
+        assert "Est." in output
+
+    def test_delete_phase_no_eta(self, mocker, capsys):
+        """Delete line should not show ETA (no throughput data)."""
+        mock_run, _ = TestTransferUnit()._make_mock_run()
+        mocker.patch("rebalancer.run_cmd", side_effect=mock_run)
+        entry = PlanEntry("/mnt/disk1/TV_Shows/Show", 100_000, "/mnt/disk1", "/mnt/disk10")
+        transfer_unit(entry, phase_status=True)
+        output = capsys.readouterr().out
+        assert "Deleting source..." in output
+        # Delete line should NOT have Est.
+        delete_line = [l for l in output.split("\n") if "Deleting" in l][0]
+        assert "Est." not in delete_line
+
+    def test_no_rates_no_eta(self, mocker, capsys):
+        """Without rates, phase lines should not show Est."""
+        mock_run, _ = TestTransferUnit()._make_mock_run()
+        mocker.patch("rebalancer.run_cmd", side_effect=mock_run)
+        entry = PlanEntry("/mnt/disk1/TV_Shows/Show", 100_000, "/mnt/disk1", "/mnt/disk10")
+        transfer_unit(entry, phase_status=True)
+        output = capsys.readouterr().out
+        copy_line = [l for l in output.split("\n") if "Copying" in l][0]
+        assert "Est." not in copy_line
+
+    def test_copy_rate_only_no_verify_eta(self, mocker, capsys):
+        """With copy_rate but no verify_rate, only copy shows Est."""
+        mock_run, _ = TestTransferUnit()._make_mock_run()
+        mocker.patch("rebalancer.run_cmd", side_effect=mock_run)
+        entry = PlanEntry("/mnt/disk1/TV_Shows/Show", 1_000_000_000, "/mnt/disk1", "/mnt/disk10")
+        transfer_unit(entry, phase_status=True, copy_rate=50_000_000.0)
+        output = capsys.readouterr().out
+        copy_line = [l for l in output.split("\n") if "Copying" in l][0]
+        verify_line = [l for l in output.split("\n") if "Verifying" in l][0]
+        assert "Est." in copy_line
+        assert "Est." not in verify_line
+
     def test_progress_passthrough_passes_to_run_cmd(self, mocker):
         """With progress=True, run_cmd is called with passthrough=True for copy phase."""
         calls_with_kwargs = []
