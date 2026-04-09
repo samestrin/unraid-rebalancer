@@ -1972,7 +1972,11 @@ def _run_with_db(args, db, excludes, drives_path, log_path) -> int:
                 eta_str = f" \u2014 {', '.join(eta_parts)}{rate_str}"
             else:
                 eta_str = " \u2014 no ETA"
-            print(f"  {_now_hms()} [{completed + 1}/{total}] Moving {short_path} "
+            if args.limit > 0:
+                progress = f"[{completed + 1}/{limit} ({total})]"
+            else:
+                progress = f"[{completed + 1}/{total}]"
+            print(f"  {_now_hms()} {progress} Moving {short_path} "
                   f"({format_bytes(entry.size_bytes)}) "
                   f"{src_disk} -> {tgt_disk}{eta_str}")
 
