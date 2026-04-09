@@ -53,6 +53,13 @@ class TestFullPipeline:
         output = capsys.readouterr().out
         assert "Discovering" in output
 
+    def test_auto_strategy_prints_selected(self, state_dir, mocker, capsys):
+        self._setup_mocks(mocker, state_dir)
+        result = main(["--strategy", "auto", "--yes", "--min-free-space", "0"])
+        assert result == 0
+        output = capsys.readouterr().out
+        assert "Strategy: auto (selected " in output
+
     def test_dry_run_creates_plan_no_execute(self, state_dir, mocker, capsys):
         self._setup_mocks(mocker, state_dir)
         transfer_mock = mocker.patch("rebalancer.transfer_unit")
