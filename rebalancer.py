@@ -1597,7 +1597,7 @@ def format_plan_summary_db(db: PlanDB) -> str:
     total_entries = sum(counts.values())
     total_bytes = db.total_bytes()
     pending_bytes = db.remaining_bytes()
-    active_count = db.get_meta("active_dir_count")
+    active_count = db.get_meta("session_transfer_limit")
 
     lines = [ANSI.bold("Plan Summary:"), ""]
     lines.append(f"  Total entries:    {total_entries}")
@@ -1611,7 +1611,7 @@ def format_plan_summary_db(db: PlanDB) -> str:
 
     active_suffix = None
     if active_count and counts.get("in_progress", 0) > 0:
-        active_suffix = f"{active_count} active"
+        active_suffix = f"limit: {active_count}"
     lines.extend(_format_status_breakdown(counts, total_entries, active_suffix))
     return "\n".join(lines)
 
@@ -1874,7 +1874,7 @@ def _run_with_db(args, db, excludes, drives_path, log_path) -> int:
     completed = 0
 
     limit = args.limit if args.limit > 0 else total
-    db.set_meta("active_dir_count", str(limit))
+    db.set_meta("session_transfer_limit", str(limit))
     print(f"\nStarting transfers: {total} pending" +
           (f" (limit: {limit})" if args.limit > 0 else ""))
     try:
@@ -1968,7 +1968,7 @@ def _run_with_db(args, db, excludes, drives_path, log_path) -> int:
             if completed > 0 and completed % 50 == 0:
                 db.checkpoint()
     finally:
-        db.delete_meta("active_dir_count")
+        db.delete_meta("session_transfer_limit")
 
     # --- Summary ---
     print(f"\n{format_plan_summary_db(db)}")
