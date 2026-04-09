@@ -439,6 +439,42 @@ class TestFormatTransferTable:
         lengths = [len(l) for l in stripped]
         assert len(set(lengths)) == 1, f"Column misalignment: lengths {lengths}"
 
+    def test_long_path_truncated(self):
+        """Paths longer than column width should be truncated with ellipsis."""
+        entry = PlanEntry(
+            "/mnt/disk1/Education/Very Long Directory Name That Exceeds Width",
+            100, "/mnt/disk1", "/mnt/disk3",
+        )
+        result = format_transfer_table([entry], "T:")
+        assert "\u2026" in result  # ellipsis
+        # Verify alignment still holds — data line should match header width
+        import re
+        lines = result.split("\n")
+        ansi_re = re.compile(r'\033\[[0-9;]*m')
+        sep_idx = next(i for i, l in enumerate(lines) if l.strip().startswith("-"))
+        header_stripped = ansi_re.sub('', lines[sep_idx - 1])
+        data_lines = [l for l in lines[sep_idx + 1:] if l.strip()]
+        for line in data_lines:
+            stripped = ansi_re.sub('', line)
+            assert len(stripped) == len(header_stripped), (
+                f"Long path broke alignment: '{stripped}' ({len(stripped)}) vs header ({len(header_stripped)})"
+            )
+
+    def test_header_data_separator_aligned(self):
+        """Header, separator, and data lines should all have consistent width."""
+        import re
+        entries = [
+            PlanEntry("/mnt/disk1/TV/Show", 1_000_000_000, "/mnt/disk1", "/mnt/disk3"),
+        ]
+        result = format_transfer_table(entries, "T:")
+        lines = result.split("\n")
+        ansi_re = re.compile(r'\033\[[0-9;]*m')
+        sep_idx = next(i for i, l in enumerate(lines) if l.strip().startswith("-"))
+        header_w = len(ansi_re.sub('', lines[sep_idx - 1]))
+        sep_w = len(lines[sep_idx])
+        data_w = len(ansi_re.sub('', lines[sep_idx + 1]))
+        assert header_w == sep_w == data_w, f"Widths: header={header_w}, sep={sep_w}, data={data_w}"
+
     def test_multiple_entries(self):
         entries = [
             PlanEntry(f"/mnt/disk1/TV/Show{i}", 100 * i, "/mnt/disk1", "/mnt/disk3")

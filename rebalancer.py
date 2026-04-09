@@ -1642,14 +1642,18 @@ def format_transfer_table(entries: list[PlanEntry], title: str) -> str:
     SRC_W = 8
     TGT_W = 8
     SIZE_W = 10
+    # Row width: 2 (indent) + PATH_W + 1 + SRC_W + 5 (  →  ) + TGT_W + 1 + SIZE_W
+    ROW_W = 2 + PATH_W + 1 + SRC_W + 5 + TGT_W + 1 + SIZE_W
 
     lines = [ANSI.bold(title), ""]
-    header = f"  {'Path':<{PATH_W}} {'Source':>{SRC_W}}    {'Target':>{TGT_W}} {'Size':>{SIZE_W}}"
+    header = f"  {'Path':<{PATH_W}} {'Source':>{SRC_W}}  \u2192  {'Target':<{TGT_W}} {'Size':>{SIZE_W}}"
     lines.append(ANSI.bold(header))
-    lines.append("  " + "-" * (PATH_W + SRC_W + TGT_W + SIZE_W + 8))
+    lines.append("  " + "-" * (ROW_W - 2))
 
     for entry in entries:
         short_path, src_disk, tgt_disk = _short_entry_fields(entry)
+        if len(short_path) > PATH_W:
+            short_path = short_path[:PATH_W - 1] + "\u2026"
         size_str = format_bytes(entry.size_bytes)
         lines.append(
             f"  {short_path:<{PATH_W}} {src_disk:>{SRC_W}}  \u2192  {tgt_disk:<{TGT_W}} {size_str:>{SIZE_W}}"
