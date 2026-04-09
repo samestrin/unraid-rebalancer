@@ -877,6 +877,57 @@ def format_duplicates_report(
     return "\n".join(lines)
 
 
+def resolve_duplicate(
+    source: MovableUnit,
+    target: MovableUnit,
+    remote: str | None = None,
+    lsof_timeout: int = 120,
+    dry_run: bool = False,
+) -> str:
+    """Verify two copies match and delete the source (fuller disk copy).
+
+    Returns: 'resolved', 'mismatch', 'in_use', 'error', or 'dry_run'.
+    """
+    if not _validate_safe_path(source.path):
+        return "error"
+
+    # Verify copies match using rsync checksum comparison
+    try:
+        verify = run_cmd(
+            ["rsync", "-anc", "--itemize-changes",
+             f"{source.path}/", f"{target.path}/"],
+            remote=remote,
+            timeout=28800,
+        )
+    except subprocess.TimeoutExpired:
+        return "error"
+
+    verify_lines = [
+        line for line in verify.stdout.strip().splitlines()
+        if line.strip() and not _DIR_TS_ONLY.match(line)
+    ]
+    if verify.returncode != 0 or verify_lines:
+        return "mismatch"
+
+    # Safety: check files aren't in use
+    if check_in_use(source.path, remote=remote, timeout=lsof_timeout):
+        return "in_use"
+
+    # Safety: reject symlinks
+    if not _check_not_symlink(source.path, remote=remote):
+        return "error"
+
+    if dry_run:
+        return "dry_run"
+
+    # Delete the source copy
+    rm_result = run_cmd(["rm", "-rf", source.path], remote=remote)
+    if rm_result.returncode != 0:
+        return "error"
+
+    return "resolved"
+
+
 # =============================================================================
 # Plan Generation
 # =============================================================================
