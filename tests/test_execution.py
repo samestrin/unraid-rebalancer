@@ -767,6 +767,18 @@ class TestPhaseStatusOutput:
         copy_line = [l for l in output.split("\n") if "Copying" in l][0]
         assert "Est." not in copy_line
 
+    def test_copy_rate_only_no_verify_eta(self, mocker, capsys):
+        """With copy_rate but no verify_rate, only copy shows Est."""
+        mock_run, _ = TestTransferUnit()._make_mock_run()
+        mocker.patch("rebalancer.run_cmd", side_effect=mock_run)
+        entry = PlanEntry("/mnt/disk1/TV_Shows/Show", 1_000_000_000, "/mnt/disk1", "/mnt/disk10")
+        transfer_unit(entry, phase_status=True, copy_rate=50_000_000.0)
+        output = capsys.readouterr().out
+        copy_line = [l for l in output.split("\n") if "Copying" in l][0]
+        verify_line = [l for l in output.split("\n") if "Verifying" in l][0]
+        assert "Est." in copy_line
+        assert "Est." not in verify_line
+
     def test_progress_passthrough_passes_to_run_cmd(self, mocker):
         """With progress=True, run_cmd is called with passthrough=True for copy phase."""
         calls_with_kwargs = []
