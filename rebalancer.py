@@ -1424,7 +1424,12 @@ def _format_status_breakdown(
 
 
 def format_plan_summary(entries: list[PlanEntry]) -> str:
-    """Format plan statistics summary."""
+    """Format plan statistics summary.
+
+    No ETA is shown because this is called at scan time before any transfers,
+    so there is no throughput history. See format_plan_summary_db() for the
+    DB-based variant that includes ETA when throughput data is available.
+    """
     if not entries:
         return "No plan entries."
     total_entries = len(entries)
