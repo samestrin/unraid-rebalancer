@@ -108,20 +108,28 @@ class TestFormatDuplicatesReport:
 
 
 class TestCheckDuplicatesCLI:
-    def _setup_mocks(self, mocker, state_dir, units=None):
+    def _setup_mocks(self, mocker, state_dir, units_by_disk=None):
         mocker.patch("rebalancer.STATE_DIR", state_dir)
         disks = [
             DiskInfo("/mnt/disk1", 1_000_000, 900_000, 100_000, 90),
             DiskInfo("/mnt/disk2", 1_000_000, 500_000, 500_000, 50),
         ]
         mocker.patch("rebalancer.discover_disks", return_value=disks)
-        if units is None:
-            units = [
-                MovableUnit("/mnt/disk1/TV/ShowA", "TV", "ShowA", 50_000, "/mnt/disk1"),
-                MovableUnit("/mnt/disk2/TV/ShowA", "TV", "ShowA", 50_000, "/mnt/disk2"),
-                MovableUnit("/mnt/disk1/TV/ShowB", "TV", "ShowB", 30_000, "/mnt/disk1"),
-            ]
-        mocker.patch("rebalancer.scan_movable_units", return_value=units)
+        if units_by_disk is None:
+            units_by_disk = {
+                "/mnt/disk1": [
+                    MovableUnit("/mnt/disk1/TV/ShowA", "TV", "ShowA", 50_000, "/mnt/disk1"),
+                    MovableUnit("/mnt/disk1/TV/ShowB", "TV", "ShowB", 30_000, "/mnt/disk1"),
+                ],
+                "/mnt/disk2": [
+                    MovableUnit("/mnt/disk2/TV/ShowA", "TV", "ShowA", 50_000, "/mnt/disk2"),
+                ],
+            }
+
+        def scan_side_effect(disk, excludes, remote=None):
+            return units_by_disk.get(disk.path, [])
+
+        mocker.patch("rebalancer.scan_movable_units", side_effect=scan_side_effect)
 
     def test_check_duplicates_prints_report(self, state_dir, mocker, capsys):
         self._setup_mocks(mocker, state_dir)
@@ -133,11 +141,11 @@ class TestCheckDuplicatesCLI:
         assert "KEEP" in output
 
     def test_check_duplicates_no_duplicates(self, state_dir, mocker, capsys):
-        unique_units = [
-            MovableUnit("/mnt/disk1/TV/ShowA", "TV", "ShowA", 50_000, "/mnt/disk1"),
-            MovableUnit("/mnt/disk2/TV/ShowB", "TV", "ShowB", 30_000, "/mnt/disk2"),
-        ]
-        self._setup_mocks(mocker, state_dir, units=unique_units)
+        unique_by_disk = {
+            "/mnt/disk1": [MovableUnit("/mnt/disk1/TV/ShowA", "TV", "ShowA", 50_000, "/mnt/disk1")],
+            "/mnt/disk2": [MovableUnit("/mnt/disk2/TV/ShowB", "TV", "ShowB", 30_000, "/mnt/disk2")],
+        }
+        self._setup_mocks(mocker, state_dir, units_by_disk=unique_by_disk)
         result = main(["--check-duplicates"])
         assert result == 0
         output = capsys.readouterr().out

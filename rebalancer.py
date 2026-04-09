@@ -1661,6 +1661,14 @@ def build_parser(config: dict | None = None) -> argparse.ArgumentParser:
         help="Reset error entries to pending for retry",
     )
     parser.add_argument(
+        "--check-duplicates", action="store_true",
+        help="Scan for items that exist on multiple disks and report",
+    )
+    parser.add_argument(
+        "--resolve-duplicates", action="store_true",
+        help="Verify and remove duplicate copies (keeps copy on emptier disk)",
+    )
+    parser.add_argument(
         "--init-config", action="store_true",
         help="Generate default config.json and exit",
     )
@@ -1801,7 +1809,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     # --- Banner (skip for data-output and quick-check modes) ---
-    if not (args.show_plan is not None or args.export_csv or args.status):
+    if not (args.show_plan is not None or args.export_csv or args.status
+            or args.check_duplicates or args.resolve_duplicates):
         print(f"\n{BANNER}")
         print(f"\nv{__version__}\n")
 
@@ -1902,6 +1911,30 @@ def main(argv: list[str] | None = None) -> int:
                     "source_disk": e.source_disk, "target_disk": e.target_disk,
                     "status": e.status,
                 })
+        return 0
+
+    # --- Mutual exclusivity check ---
+    if args.check_duplicates and args.resolve_duplicates:
+        print("Error: --check-duplicates and --resolve-duplicates are mutually exclusive")
+        return 1
+
+    # --- Check duplicates mode (no lock needed, read-only) ---
+    if args.check_duplicates:
+        config_excludes = config.get("excludes", [])
+        includes = set(args.include)
+        excludes = [s for s in (config_excludes + args.exclude) if s not in includes]
+        print("Discovering disks...")
+        disks = discover_disks(remote=args.remote)
+        if not disks:
+            print("Error: no disks found at /mnt/disk*. Are you running on Unraid?")
+            return 1
+        disk_usage = {d.path: d.used_pct for d in disks}
+        print("Scanning for duplicates...")
+        all_units = []
+        for disk in disks:
+            all_units.extend(scan_movable_units(disk, excludes, remote=args.remote))
+        groups = find_duplicates(all_units, disk_usage)
+        print(format_duplicates_report(groups, disk_usage))
         return 0
 
     # --- Lock (prevent concurrent runs) ---
