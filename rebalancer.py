@@ -847,6 +847,36 @@ def find_duplicates(
     return result
 
 
+def format_duplicates_report(
+    groups: list[list[MovableUnit]],
+    disk_usage: dict[str, int],
+) -> str:
+    """Format a report of duplicate items found across disks."""
+    if not groups:
+        return "No duplicates found."
+
+    lines = [ANSI.bold("Duplicates Found:"), ""]
+    reclaimable = 0
+
+    for group in groups:
+        share_name = f"{group[0].share}/{group[0].name}"
+        lines.append(f"  {ANSI.bold(share_name)}")
+        for i, unit in enumerate(group):
+            disk_name = unit.disk.split("/")[-1]
+            pct = disk_usage.get(unit.disk, 0)
+            size = format_bytes(unit.size_bytes)
+            if i < len(group) - 1:
+                label = ANSI.red("DELETE")
+                reclaimable += unit.size_bytes
+            else:
+                label = ANSI.green("KEEP")
+            lines.append(f"    {disk_name:<10} {size:>10}  ({pct}%)  {label}")
+        lines.append("")
+
+    lines.append(f"Found {len(groups)} duplicate(s), {format_bytes(reclaimable)} reclaimable.")
+    return "\n".join(lines)
+
+
 # =============================================================================
 # Plan Generation
 # =============================================================================
