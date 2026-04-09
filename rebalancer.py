@@ -17,7 +17,7 @@ import subprocess
 import sys
 import tempfile
 import time as time_mod
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, time as dt_time
 from pathlib import Path
@@ -29,7 +29,7 @@ from pathlib import Path
 
 __version__ = "0.2.0"
 
-STATE_DIR = Path.home() / ".unraid-rebalancer"
+STATE_DIR = Path("/boot/config/plugins/rebalancer")
 DEFAULT_MAX_USED = 80
 PLAN_FILE = "plan.csv"
 DRIVES_FILE = "drives.json"
@@ -812,6 +812,119 @@ def scan_movable_units(
             ))
 
     return units
+
+
+# =============================================================================
+# Duplicate Detection
+# =============================================================================
+
+
+def find_duplicates(
+    units: list[MovableUnit],
+    disk_usage: dict[str, int] | None = None,
+) -> list[list[MovableUnit]]:
+    """Find items that exist on multiple disks.
+
+    Groups by (share, name). Returns groups with 2+ members.
+    Within each group, units sorted by disk usage descending (fuller first),
+    so group[0] is the candidate for deletion and group[-1] is kept.
+    """
+    groups: dict[tuple[str, str], list[MovableUnit]] = defaultdict(list)
+    for unit in units:
+        groups[(unit.share, unit.name)].append(unit)
+
+    result = []
+    for key, group in sorted(groups.items()):
+        if len(group) < 2:
+            continue
+        if disk_usage:
+            group.sort(key=lambda u: disk_usage.get(u.disk, 0), reverse=True)
+        else:
+            group.sort(key=lambda u: u.disk)
+        result.append(group)
+
+    return result
+
+
+def format_duplicates_report(
+    groups: list[list[MovableUnit]],
+    disk_usage: dict[str, int],
+) -> str:
+    """Format a report of duplicate items found across disks."""
+    if not groups:
+        return "No duplicates found."
+
+    lines = [ANSI.bold("Duplicates Found:"), ""]
+    reclaimable = 0
+
+    for group in groups:
+        share_name = f"{group[0].share}/{group[0].name}"
+        lines.append(f"  {ANSI.bold(share_name)}")
+        for i, unit in enumerate(group):
+            disk_name = unit.disk.split("/")[-1]
+            pct = disk_usage.get(unit.disk, 0)
+            size = format_bytes(unit.size_bytes)
+            if i < len(group) - 1:
+                label = ANSI.red("DELETE")
+                reclaimable += unit.size_bytes
+            else:
+                label = ANSI.green("KEEP")
+            lines.append(f"    {disk_name:<10} {size:>10}  ({pct}%)  {label}")
+        lines.append("")
+
+    lines.append(f"Found {len(groups)} duplicate(s), {format_bytes(reclaimable)} reclaimable.")
+    return "\n".join(lines)
+
+
+def resolve_duplicate(
+    source: MovableUnit,
+    target: MovableUnit,
+    remote: str | None = None,
+    lsof_timeout: int = 120,
+    dry_run: bool = False,
+) -> str:
+    """Verify two copies match and delete the source (fuller disk copy).
+
+    Returns: 'resolved', 'mismatch', 'in_use', 'error', or 'dry_run'.
+    """
+    if not _validate_safe_path(source.path):
+        return "error"
+
+    # Verify copies match using rsync checksum comparison
+    try:
+        verify = run_cmd(
+            ["rsync", "-anc", "--itemize-changes",
+             f"{source.path}/", f"{target.path}/"],
+            remote=remote,
+            timeout=28800,
+        )
+    except subprocess.TimeoutExpired:
+        return "error"
+
+    verify_lines = [
+        line for line in verify.stdout.strip().splitlines()
+        if line.strip() and not _DIR_TS_ONLY.match(line)
+    ]
+    if verify.returncode != 0 or verify_lines:
+        return "mismatch"
+
+    # Safety: check files aren't in use
+    if check_in_use(source.path, remote=remote, timeout=lsof_timeout):
+        return "in_use"
+
+    # Safety: reject symlinks
+    if not _check_not_symlink(source.path, remote=remote):
+        return "error"
+
+    if dry_run:
+        return "dry_run"
+
+    # Delete the source copy
+    rm_result = run_cmd(["rm", "-rf", source.path], remote=remote)
+    if rm_result.returncode != 0:
+        return "error"
+
+    return "resolved"
 
 
 # =============================================================================
@@ -1598,6 +1711,14 @@ def build_parser(config: dict | None = None) -> argparse.ArgumentParser:
         help="Reset error entries to pending for retry",
     )
     parser.add_argument(
+        "--check-duplicates", action="store_true",
+        help="Scan for items that exist on multiple disks and report",
+    )
+    parser.add_argument(
+        "--resolve-duplicates", action="store_true",
+        help="Verify and remove duplicate copies (keeps copy on emptier disk)",
+    )
+    parser.add_argument(
         "--init-config", action="store_true",
         help="Generate default config.json and exit",
     )
@@ -1607,7 +1728,7 @@ def build_parser(config: dict | None = None) -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--state-dir", type=str, default=None,
-        help="Override state directory (default: ~/.unraid-rebalancer/). "
+        help="Override state directory (default: /boot/config/plugins/rebalancer/). "
              "Also settable via UNRAID_REBALANCER_STATE_DIR env var.",
     )
     return parser
@@ -1738,7 +1859,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     # --- Banner (skip for data-output and quick-check modes) ---
-    if not (args.show_plan is not None or args.export_csv or args.status):
+    if not (args.show_plan is not None or args.export_csv or args.status
+            or args.check_duplicates or args.resolve_duplicates):
         print(f"\n{BANNER}")
         print(f"\nv{__version__}\n")
 
@@ -1841,6 +1963,30 @@ def main(argv: list[str] | None = None) -> int:
                 })
         return 0
 
+    # --- Mutual exclusivity check ---
+    if args.check_duplicates and args.resolve_duplicates:
+        print("Error: --check-duplicates and --resolve-duplicates are mutually exclusive")
+        return 1
+
+    # --- Check duplicates mode (no lock needed, read-only) ---
+    if args.check_duplicates:
+        config_excludes = config.get("excludes", [])
+        includes = set(args.include)
+        excludes = [s for s in (config_excludes + args.exclude) if s not in includes]
+        print("Discovering disks...")
+        disks = discover_disks(remote=args.remote)
+        if not disks:
+            print("Error: no disks found at /mnt/disk*. Are you running on Unraid?")
+            return 1
+        disk_usage = {d.path: d.used_pct for d in disks}
+        print("Scanning for duplicates...")
+        all_units = []
+        for disk in disks:
+            all_units.extend(scan_movable_units(disk, excludes, remote=args.remote))
+        groups = find_duplicates(all_units, disk_usage)
+        print(format_duplicates_report(groups, disk_usage))
+        return 0
+
     # --- Lock (prevent concurrent runs) ---
     lock_fd = acquire_lock(state_dir)
     if lock_fd is None:
@@ -1873,6 +2019,60 @@ def _main_locked(args, config, state_dir, db_path, drives_path, log_path) -> int
     if missing:
         print(f"Error: required tools not found: {', '.join(missing)}")
         return 1
+
+    # --- Resolve duplicates mode (before PlanDB, independent workflow) ---
+    if args.resolve_duplicates:
+        print("Discovering disks...")
+        disks = discover_disks(remote=args.remote)
+        if not disks:
+            print("Error: no disks found at /mnt/disk*. Are you running on Unraid?")
+            return 1
+        disk_usage = {d.path: d.used_pct for d in disks}
+        print("Scanning for duplicates...")
+        all_units = []
+        for disk in disks:
+            all_units.extend(scan_movable_units(disk, excludes, remote=args.remote))
+        groups = find_duplicates(all_units, disk_usage)
+        if not groups:
+            print("No duplicates found.")
+            return 0
+        print(format_duplicates_report(groups, disk_usage))
+        if not args.yes:
+            try:
+                answer = input("\nResolve duplicates? [y/N] ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                answer = ""
+            if answer != "y":
+                print("Aborted.")
+                return 0
+        resolved = 0
+        skipped_mismatch = 0
+        skipped_other = 0
+        for group in groups:
+            # Delete all copies except the last (emptiest disk)
+            keep = group[-1]
+            for source in group[:-1]:
+                short = f"{source.share}/{source.name}"
+                src_disk = source.disk.split("/")[-1]
+                print(f"  Verifying {short} ({src_disk})...", end="", flush=True)
+                status = resolve_duplicate(
+                    source, keep, remote=args.remote,
+                    lsof_timeout=args.lsof_timeout, dry_run=args.dry_run,
+                )
+                if status == "resolved":
+                    resolved += 1
+                    print(f" deleted from {src_disk}")
+                elif status == "dry_run":
+                    resolved += 1
+                    print(f" would delete from {src_disk} (dry run)")
+                elif status == "mismatch":
+                    skipped_mismatch += 1
+                    print(f" MISMATCH — skipped")
+                else:
+                    skipped_other += 1
+                    print(f" {status} — skipped")
+        print(f"\nResolved: {resolved}, Mismatched: {skipped_mismatch}, Skipped: {skipped_other}")
+        return 0
 
     # --- Open database (closed in finally block) ---
     db = PlanDB(db_path)
