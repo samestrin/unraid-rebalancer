@@ -211,6 +211,12 @@ class TestFormatPlanSummary:
         summary = format_plan_summary([])
         assert "No plan entries." in summary
 
+    def test_no_eta_line_in_list_summary(self):
+        """List-based summary has no ETA — no throughput data at scan time."""
+        entries = [PlanEntry("/a", 1_000_000_000, "/s", "/t", status="pending")]
+        summary = format_plan_summary(entries)
+        assert "Estimated time:" not in summary
+
     def test_shows_total_bytes(self):
         entries = [PlanEntry("/a", 1_000_000_000_000, "/s", "/t", status="pending")]
         summary = format_plan_summary(entries)
@@ -275,6 +281,14 @@ class TestFormatPlanSummaryDB:
         remaining_idx = next(i for i, l in enumerate(lines) if "Remaining:" in l)
         eta_idx = next(i for i, l in enumerate(lines) if "Estimated time:" in l)
         assert remaining_idx < eta_idx
+        db.close()
+
+    def test_no_throughput_data_omits_eta(self, state_dir, db_path):
+        """When no throughput history exists, ETA line should not appear."""
+        db = PlanDB(db_path)
+        db.write_plan([PlanEntry("/a", 1_000_000_000, "/s", "/t", status="pending")])
+        summary = format_plan_summary_db(db)
+        assert "Estimated time:" not in summary
         db.close()
 
     def test_remaining_includes_in_progress_bytes_db(self, state_dir, db_path):
