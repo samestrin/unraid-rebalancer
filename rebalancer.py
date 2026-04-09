@@ -2021,6 +2021,60 @@ def _main_locked(args, config, state_dir, db_path, drives_path, log_path) -> int
         print(f"Error: required tools not found: {', '.join(missing)}")
         return 1
 
+    # --- Resolve duplicates mode (before PlanDB, independent workflow) ---
+    if args.resolve_duplicates:
+        print("Discovering disks...")
+        disks = discover_disks(remote=args.remote)
+        if not disks:
+            print("Error: no disks found at /mnt/disk*. Are you running on Unraid?")
+            return 1
+        disk_usage = {d.path: d.used_pct for d in disks}
+        print("Scanning for duplicates...")
+        all_units = []
+        for disk in disks:
+            all_units.extend(scan_movable_units(disk, excludes, remote=args.remote))
+        groups = find_duplicates(all_units, disk_usage)
+        if not groups:
+            print("No duplicates found.")
+            return 0
+        print(format_duplicates_report(groups, disk_usage))
+        if not args.yes:
+            try:
+                answer = input("\nResolve duplicates? [y/N] ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                answer = ""
+            if answer != "y":
+                print("Aborted.")
+                return 0
+        resolved = 0
+        skipped_mismatch = 0
+        skipped_other = 0
+        for group in groups:
+            # Delete all copies except the last (emptiest disk)
+            keep = group[-1]
+            for source in group[:-1]:
+                short = f"{source.share}/{source.name}"
+                src_disk = source.disk.split("/")[-1]
+                print(f"  Verifying {short} ({src_disk})...", end="", flush=True)
+                status = resolve_duplicate(
+                    source, keep, remote=args.remote,
+                    lsof_timeout=args.lsof_timeout, dry_run=args.dry_run,
+                )
+                if status == "resolved":
+                    resolved += 1
+                    print(f" deleted from {src_disk}")
+                elif status == "dry_run":
+                    resolved += 1
+                    print(f" would delete from {src_disk} (dry run)")
+                elif status == "mismatch":
+                    skipped_mismatch += 1
+                    print(f" MISMATCH — skipped")
+                else:
+                    skipped_other += 1
+                    print(f" {status} — skipped")
+        print(f"\nResolved: {resolved}, Mismatched: {skipped_mismatch}, Skipped: {skipped_other}")
+        return 0
+
     # --- Open database (closed in finally block) ---
     db = PlanDB(db_path)
     try:
