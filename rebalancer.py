@@ -17,7 +17,7 @@ import subprocess
 import sys
 import tempfile
 import time as time_mod
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, time as dt_time
 from pathlib import Path
@@ -829,7 +829,6 @@ def find_duplicates(
     Within each group, units sorted by disk usage descending (fuller first),
     so group[0] is the candidate for deletion and group[-1] is kept.
     """
-    from collections import defaultdict
     groups: dict[tuple[str, str], list[MovableUnit]] = defaultdict(list)
     for unit in units:
         groups[(unit.share, unit.name)].append(unit)

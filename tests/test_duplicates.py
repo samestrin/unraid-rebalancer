@@ -296,3 +296,28 @@ class TestResolveDuplicatesCLI:
         assert result == 1
         output = capsys.readouterr().out
         assert "mutually exclusive" in output
+
+    def test_resolve_triple_deletes_two(self, state_dir, mocker, capsys):
+        """Triple duplicate should delete copies on the two fuller disks."""
+        mocker.patch("rebalancer.STATE_DIR", state_dir)
+        mocker.patch("rebalancer.setup_signal_handlers")
+        disks = [
+            DiskInfo("/mnt/disk1", 1_000_000, 950_000, 50_000, 95),
+            DiskInfo("/mnt/disk2", 1_000_000, 800_000, 200_000, 80),
+            DiskInfo("/mnt/disk3", 1_000_000, 300_000, 700_000, 30),
+        ]
+        mocker.patch("rebalancer.discover_disks", return_value=disks)
+
+        def scan_side_effect(disk, excludes, remote=None):
+            return [MovableUnit(f"{disk.path}/TV/ShowA", "TV", "ShowA", 50_000, disk.path)]
+        mocker.patch("rebalancer.scan_movable_units", side_effect=scan_side_effect)
+
+        resolve_mock = mocker.patch("rebalancer.resolve_duplicate", return_value="resolved")
+        result = main(["--resolve-duplicates", "--yes"])
+        assert result == 0
+        # Should be called twice: delete from disk1 (95%) and disk2 (80%), keep disk3 (30%)
+        assert resolve_mock.call_count == 2
+        # Verify the kept copy is on disk3
+        for call in resolve_mock.call_args_list:
+            keep = call.args[1]  # target (kept copy)
+            assert keep.disk == "/mnt/disk3"
