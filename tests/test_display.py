@@ -174,6 +174,18 @@ class TestFormatPlanSummary:
         assert "Skipped" not in summary
         assert "Error" not in summary
 
+    def test_remaining_includes_in_progress_bytes(self):
+        """Remaining should count both pending and in_progress entries."""
+        entries = [
+            PlanEntry("/a", 1_000_000_000, "/s", "/t", status="pending"),
+            PlanEntry("/b", 2_000_000_000, "/s", "/t", status="in_progress"),
+            PlanEntry("/c", 3_000_000_000, "/s", "/t", status="cleaned"),
+        ]
+        summary = format_plan_summary(entries)
+        # pending + in_progress = 3 GB = 2.8 GB formatted
+        assert "Remaining:" in summary
+        assert "2.8 GB" in summary
+
     def test_empty_plan_returns_no_plan_message(self):
         summary = format_plan_summary([])
         assert "No plan entries." in summary
@@ -242,6 +254,19 @@ class TestFormatPlanSummaryDB:
         remaining_idx = next(i for i, l in enumerate(lines) if "Remaining:" in l)
         eta_idx = next(i for i, l in enumerate(lines) if "Estimated time:" in l)
         assert remaining_idx < eta_idx
+        db.close()
+
+    def test_remaining_includes_in_progress_bytes_db(self, state_dir, db_path):
+        """DB-based remaining should count both pending and in_progress."""
+        db = PlanDB(db_path)
+        db.write_plan([
+            PlanEntry("/a", 1_000_000_000, "/s", "/t", status="pending"),
+            PlanEntry("/b", 2_000_000_000, "/s", "/t", status="in_progress"),
+            PlanEntry("/c", 3_000_000_000, "/s", "/t", status="cleaned"),
+        ])
+        summary = format_plan_summary_db(db)
+        assert "Remaining:" in summary
+        assert "2.8 GB" in summary
         db.close()
 
     def test_empty_plan_returns_no_plan_message(self, state_dir, db_path):
