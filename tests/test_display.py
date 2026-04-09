@@ -13,6 +13,7 @@ from rebalancer import (
     format_disk_table,
     format_plan_summary,
     format_plan_summary_db,
+    _format_status_breakdown,
     ANSI,
 )
 
@@ -248,3 +249,15 @@ class TestFormatPlanSummaryDB:
         summary = format_plan_summary_db(db)
         assert "No plan entries." in summary
         db.close()
+
+
+class TestFormatStatusBreakdown:
+    def test_zero_total_entries_with_nonzero_count_no_crash(self):
+        """Should not raise ZeroDivisionError when total_entries is 0."""
+        result = _format_status_breakdown({"pending": 1}, total_entries=0)
+        assert result == []
+
+    def test_zero_total_entries_with_zero_counts(self):
+        """Zero total with zero counts should return empty list."""
+        result = _format_status_breakdown({"pending": 0}, total_entries=0)
+        assert result == []
