@@ -9,6 +9,7 @@ from rebalancer import (
     MovableUnit,
     find_duplicates,
     format_duplicates_report,
+    resolve_duplicate,
     main,
 )
 
@@ -158,3 +159,76 @@ class TestCheckDuplicatesCLI:
         result = main(["--check-duplicates"])
         assert result == 0
         lock_mock.assert_not_called()
+
+
+class TestResolveDuplicate:
+    def _mock_run(self, mocker, verify_stdout="", verify_rc=0, rm_rc=0,
+                  in_use=False, is_symlink=False):
+        """Mock run_cmd for resolve_duplicate tests."""
+        def side_effect(cmd, **kwargs):
+            cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
+            result = MagicMock()
+            result.stdout = ""
+            result.stderr = ""
+            result.returncode = 0
+            if "--itemize-changes" in cmd_str:
+                result.stdout = verify_stdout
+                result.returncode = verify_rc
+            elif "rm -rf" in cmd_str:
+                result.returncode = rm_rc
+            elif "test -L" in cmd_str:
+                result.returncode = 0 if is_symlink else 1
+            elif "lsof" in cmd_str:
+                result.returncode = 0 if in_use else 1
+                result.stdout = "COMMAND PID" if in_use else ""
+            return result
+        mocker.patch("rebalancer.run_cmd", side_effect=side_effect)
+
+    def test_verified_match_deletes_source(self, mocker):
+        self._mock_run(mocker)
+        source = MovableUnit("/mnt/disk1/TV/ShowA", "TV", "ShowA", 100, "/mnt/disk1")
+        target = MovableUnit("/mnt/disk2/TV/ShowA", "TV", "ShowA", 100, "/mnt/disk2")
+        status = resolve_duplicate(source, target)
+        assert status == "resolved"
+
+    def test_mismatch_does_not_delete(self, mocker):
+        self._mock_run(mocker, verify_stdout=">f..t...... file.mkv\n")
+        source = MovableUnit("/mnt/disk1/TV/ShowA", "TV", "ShowA", 100, "/mnt/disk1")
+        target = MovableUnit("/mnt/disk2/TV/ShowA", "TV", "ShowA", 100, "/mnt/disk2")
+        status = resolve_duplicate(source, target)
+        assert status == "mismatch"
+
+    def test_in_use_does_not_delete(self, mocker):
+        self._mock_run(mocker, in_use=True)
+        source = MovableUnit("/mnt/disk1/TV/ShowA", "TV", "ShowA", 100, "/mnt/disk1")
+        target = MovableUnit("/mnt/disk2/TV/ShowA", "TV", "ShowA", 100, "/mnt/disk2")
+        status = resolve_duplicate(source, target)
+        assert status == "in_use"
+
+    def test_symlink_does_not_delete(self, mocker):
+        self._mock_run(mocker, is_symlink=True)
+        source = MovableUnit("/mnt/disk1/TV/ShowA", "TV", "ShowA", 100, "/mnt/disk1")
+        target = MovableUnit("/mnt/disk2/TV/ShowA", "TV", "ShowA", 100, "/mnt/disk2")
+        status = resolve_duplicate(source, target)
+        assert status == "error"
+
+    def test_dry_run_does_not_delete(self, mocker):
+        self._mock_run(mocker)
+        source = MovableUnit("/mnt/disk1/TV/ShowA", "TV", "ShowA", 100, "/mnt/disk1")
+        target = MovableUnit("/mnt/disk2/TV/ShowA", "TV", "ShowA", 100, "/mnt/disk2")
+        status = resolve_duplicate(source, target, dry_run=True)
+        assert status == "dry_run"
+
+    def test_invalid_path_rejected(self, mocker):
+        self._mock_run(mocker)
+        source = MovableUnit("/tmp/bad", "TV", "ShowA", 100, "/tmp")
+        target = MovableUnit("/mnt/disk2/TV/ShowA", "TV", "ShowA", 100, "/mnt/disk2")
+        status = resolve_duplicate(source, target)
+        assert status == "error"
+
+    def test_rm_failure_returns_error(self, mocker):
+        self._mock_run(mocker, rm_rc=1)
+        source = MovableUnit("/mnt/disk1/TV/ShowA", "TV", "ShowA", 100, "/mnt/disk1")
+        target = MovableUnit("/mnt/disk2/TV/ShowA", "TV", "ShowA", 100, "/mnt/disk2")
+        status = resolve_duplicate(source, target)
+        assert status == "error"
