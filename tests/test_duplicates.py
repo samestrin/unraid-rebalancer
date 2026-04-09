@@ -232,3 +232,67 @@ class TestResolveDuplicate:
         target = MovableUnit("/mnt/disk2/TV/ShowA", "TV", "ShowA", 100, "/mnt/disk2")
         status = resolve_duplicate(source, target)
         assert status == "error"
+
+
+class TestResolveDuplicatesCLI:
+    def _setup_mocks(self, mocker, state_dir):
+        mocker.patch("rebalancer.STATE_DIR", state_dir)
+        mocker.patch("rebalancer.setup_signal_handlers")
+        disks = [
+            DiskInfo("/mnt/disk1", 1_000_000, 900_000, 100_000, 90),
+            DiskInfo("/mnt/disk2", 1_000_000, 500_000, 500_000, 50),
+        ]
+        mocker.patch("rebalancer.discover_disks", return_value=disks)
+
+        def scan_side_effect(disk, excludes, remote=None):
+            if disk.path == "/mnt/disk1":
+                return [MovableUnit("/mnt/disk1/TV/ShowA", "TV", "ShowA", 50_000, "/mnt/disk1")]
+            elif disk.path == "/mnt/disk2":
+                return [MovableUnit("/mnt/disk2/TV/ShowA", "TV", "ShowA", 50_000, "/mnt/disk2")]
+            return []
+        mocker.patch("rebalancer.scan_movable_units", side_effect=scan_side_effect)
+
+    def test_resolve_duplicates_full_flow(self, state_dir, mocker, capsys):
+        self._setup_mocks(mocker, state_dir)
+        mocker.patch("rebalancer.resolve_duplicate", return_value="resolved")
+        result = main(["--resolve-duplicates", "--yes"])
+        assert result == 0
+        output = capsys.readouterr().out
+        assert "resolved" in output.lower() or "Resolved" in output
+
+    def test_resolve_duplicates_dry_run(self, state_dir, mocker, capsys):
+        self._setup_mocks(mocker, state_dir)
+        resolve_mock = mocker.patch("rebalancer.resolve_duplicate", return_value="dry_run")
+        result = main(["--resolve-duplicates", "--dry-run", "--yes"])
+        assert result == 0
+        call_kwargs = resolve_mock.call_args.kwargs
+        assert call_kwargs.get("dry_run") is True
+
+    def test_resolve_duplicates_requires_confirmation(self, state_dir, mocker, capsys):
+        self._setup_mocks(mocker, state_dir)
+        mocker.patch("builtins.input", return_value="n")
+        mocker.patch("rebalancer.resolve_duplicate")
+        result = main(["--resolve-duplicates"])
+        assert result == 0
+        output = capsys.readouterr().out
+        assert "Aborted" in output
+
+    def test_resolve_duplicates_no_duplicates(self, state_dir, mocker, capsys):
+        mocker.patch("rebalancer.STATE_DIR", state_dir)
+        mocker.patch("rebalancer.setup_signal_handlers")
+        disks = [DiskInfo("/mnt/disk1", 1_000_000, 500_000, 500_000, 50)]
+        mocker.patch("rebalancer.discover_disks", return_value=disks)
+        mocker.patch("rebalancer.scan_movable_units", return_value=[
+            MovableUnit("/mnt/disk1/TV/ShowA", "TV", "ShowA", 50_000, "/mnt/disk1"),
+        ])
+        result = main(["--resolve-duplicates", "--yes"])
+        assert result == 0
+        output = capsys.readouterr().out
+        assert "No duplicates found." in output
+
+    def test_mutual_exclusivity(self, state_dir, mocker, capsys):
+        mocker.patch("rebalancer.STATE_DIR", state_dir)
+        result = main(["--check-duplicates", "--resolve-duplicates"])
+        assert result == 1
+        output = capsys.readouterr().out
+        assert "mutually exclusive" in output
