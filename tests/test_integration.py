@@ -211,6 +211,58 @@ class TestFullPipeline:
         assert "Total entries:" in output
         assert "%" in output
 
+    def test_status_shows_current_transfer(self, state_dir, db_path, mocker, capsys):
+        mocker.patch("rebalancer.STATE_DIR", state_dir)
+
+        db = PlanDB(db_path)
+        db.write_plan([
+            PlanEntry("/mnt/disk1/Movies/2023", 5_000_000_000, "/mnt/disk1", "/mnt/disk3", status="in_progress"),
+            PlanEntry("/mnt/disk2/TV/ShowA", 1_000_000_000, "/mnt/disk2", "/mnt/disk5", status="pending"),
+        ])
+        db.close()
+
+        result = main(["--status"])
+        assert result == 0
+        output = capsys.readouterr().out
+        assert "Current Transfer:" in output
+        assert "Movies/2023" in output
+        assert "disk1" in output
+
+    def test_status_shows_up_next(self, state_dir, db_path, mocker, capsys):
+        mocker.patch("rebalancer.STATE_DIR", state_dir)
+
+        db = PlanDB(db_path)
+        entries = [
+            PlanEntry(f"/mnt/disk1/TV/Show{i}", 100_000_000 * i, "/mnt/disk1", "/mnt/disk3", status="pending")
+            for i in range(1, 8)
+        ]
+        db.write_plan(entries)
+        db.close()
+
+        result = main(["--status"])
+        assert result == 0
+        output = capsys.readouterr().out
+        assert "Up Next:" in output
+        # Should show first 5 only
+        assert "Show1" in output
+        assert "Show5" in output
+        assert "Show6" not in output
+
+    def test_status_no_pending_no_up_next(self, state_dir, db_path, mocker, capsys):
+        mocker.patch("rebalancer.STATE_DIR", state_dir)
+
+        db = PlanDB(db_path)
+        db.write_plan([
+            PlanEntry("/mnt/disk1/A", 100, "/mnt/disk1", "/mnt/disk3", status="cleaned"),
+        ])
+        db.close()
+
+        result = main(["--status"])
+        assert result == 0
+        output = capsys.readouterr().out
+        assert "Up Next:" not in output
+        assert "Current Transfer:" not in output
+
     def test_limit_stops_after_n_transfers(self, state_dir, db_path, mocker, capsys):
         mocker.patch("rebalancer.STATE_DIR", state_dir)
         mocker.patch("rebalancer.setup_signal_handlers")
@@ -241,6 +293,58 @@ class TestFullPipeline:
         assert len(cleaned) == 1
         assert len(pending) == 2
         db.close()
+
+    def test_limit_progress_counter_shows_limit_and_total(self, state_dir, db_path, mocker, capsys):
+        """With --limit, progress should show [1/2 (3)] not [1/3]."""
+        mocker.patch("rebalancer.STATE_DIR", state_dir)
+        mocker.patch("rebalancer.setup_signal_handlers")
+        mocker.patch("rebalancer.shutdown_requested", return_value=False)
+        mocker.patch("rebalancer.is_within_active_hours", return_value=True)
+        mocker.patch("rebalancer.check_in_use", return_value=False)
+        mocker.patch("rebalancer.transfer_unit", return_value=TransferResult("cleaned"))
+
+        db = PlanDB(db_path)
+        db.write_plan([
+            PlanEntry("/mnt/disk1/TV_Shows/A", 100, "/mnt/disk1", "/mnt/disk3", status="pending"),
+            PlanEntry("/mnt/disk1/TV_Shows/B", 200, "/mnt/disk1", "/mnt/disk3", status="pending"),
+            PlanEntry("/mnt/disk1/TV_Shows/C", 300, "/mnt/disk1", "/mnt/disk3", status="pending"),
+        ])
+        db.close()
+
+        mocker.patch("rebalancer.discover_disks")
+        mocker.patch("rebalancer.scan_movable_units")
+
+        result = main(["--limit", "2", "--yes"])
+        assert result == 0
+        output = capsys.readouterr().out
+        # Should show [1/2 (3)] format — progress within limit, total in parens
+        assert "[1/2 (3)]" in output
+        assert "[2/2 (3)]" in output
+
+    def test_no_limit_progress_counter_shows_total(self, state_dir, db_path, mocker, capsys):
+        """Without --limit, progress should show [1/3] as before."""
+        mocker.patch("rebalancer.STATE_DIR", state_dir)
+        mocker.patch("rebalancer.setup_signal_handlers")
+        mocker.patch("rebalancer.shutdown_requested", return_value=False)
+        mocker.patch("rebalancer.is_within_active_hours", return_value=True)
+        mocker.patch("rebalancer.check_in_use", return_value=False)
+        mocker.patch("rebalancer.transfer_unit", return_value=TransferResult("cleaned"))
+
+        db = PlanDB(db_path)
+        db.write_plan([
+            PlanEntry("/mnt/disk1/TV_Shows/A", 100, "/mnt/disk1", "/mnt/disk3", status="pending"),
+            PlanEntry("/mnt/disk1/TV_Shows/B", 200, "/mnt/disk1", "/mnt/disk3", status="pending"),
+        ])
+        db.close()
+
+        mocker.patch("rebalancer.discover_disks")
+        mocker.patch("rebalancer.scan_movable_units")
+
+        result = main(["--yes"])
+        assert result == 0
+        output = capsys.readouterr().out
+        assert "[1/2]" in output
+        assert "[2/2]" in output
 
     def test_limit_counts_only_successful_transfers(self, state_dir, db_path, mocker, capsys):
         mocker.patch("rebalancer.STATE_DIR", state_dir)

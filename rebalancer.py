@@ -1384,6 +1384,18 @@ def _title_case_status(status: str) -> str:
     return status.replace("_", " ").title()
 
 
+def _short_entry_fields(entry: PlanEntry) -> tuple[str, str, str]:
+    """Extract short display fields from a plan entry.
+
+    Returns (short_path, src_disk, tgt_disk) for display purposes.
+    """
+    parts = entry.path.split("/")
+    short_path = "/".join(parts[3:]) if len(parts) > 3 else os.path.basename(entry.path)
+    src_disk = entry.source_disk.split("/")[-1]
+    tgt_disk = entry.target_disk.split("/")[-1]
+    return short_path, src_disk, tgt_disk
+
+
 def _format_status_breakdown(
     counts: dict[str, int],
     total_entries: int,
@@ -1621,6 +1633,35 @@ def format_plan_summary_db(db: PlanDB) -> str:
     return "\n".join(lines)
 
 
+def format_transfer_table(entries: list[PlanEntry], title: str) -> str:
+    """Format plan entries as a transfer table with title, separator, and aligned columns."""
+    if not entries:
+        return ""
+
+    PATH_W = 30
+    SRC_W = 8
+    TGT_W = 8
+    SIZE_W = 10
+    # Row width: 2 (indent) + PATH_W + 1 + SRC_W + 5 (  →  ) + TGT_W + 1 + SIZE_W
+    ROW_W = 2 + PATH_W + 1 + SRC_W + 5 + TGT_W + 1 + SIZE_W
+
+    lines = [ANSI.bold(title), ""]
+    header = f"  {'Path':<{PATH_W}} {'Source':>{SRC_W}}  \u2192  {'Target':<{TGT_W}} {'Size':>{SIZE_W}}"
+    lines.append(ANSI.bold(header))
+    lines.append("  " + "-" * (ROW_W - 2))
+
+    for entry in entries:
+        short_path, src_disk, tgt_disk = _short_entry_fields(entry)
+        if len(short_path) > PATH_W:
+            short_path = short_path[:PATH_W - 1] + "\u2026"
+        size_str = format_bytes(entry.size_bytes)
+        lines.append(
+            f"  {short_path:<{PATH_W}} {src_disk:>{SRC_W}}  \u2192  {tgt_disk:<{TGT_W}} {size_str:>{SIZE_W}}"
+        )
+
+    return "\n".join(lines)
+
+
 def _resolve_state_dir(argv: list[str] | None) -> Path:
     """Resolve state directory from --state-dir flag, env var, or default.
 
@@ -1716,6 +1757,18 @@ def main(argv: list[str] | None = None) -> int:
                     print(format_disk_table(drives))
                     print()
                 print(format_plan_summary_db(db))
+
+                # Current transfer
+                in_progress = db.get_all(status_filter="in_progress")
+                if in_progress:
+                    print()
+                    print(format_transfer_table(in_progress, "Current Transfer:"))
+
+                # Up next
+                pending = db.get_pending()
+                if pending:
+                    print()
+                    print(format_transfer_table(pending[:5], "Up Next:"))
         return 0
 
     # --- Show plan mode (no lock needed) ---
@@ -1911,11 +1964,7 @@ def _run_with_db(args, db, excludes, drives_path, log_path) -> int:
 
             # Transfer
             db.update_status(entry.path, "in_progress")
-            # Show share/item (e.g., "Movies/2023") and short disk names (e.g., "disk4")
-            parts = entry.path.split("/")
-            short_path = "/".join(parts[3:]) if len(parts) > 3 else os.path.basename(entry.path)
-            src_disk = entry.source_disk.split("/")[-1]
-            tgt_disk = entry.target_disk.split("/")[-1]
+            short_path, src_disk, tgt_disk = _short_entry_fields(entry)
             copy_rate = db.avg_copy_throughput() or db.avg_throughput()
             last_rate = db.last_copy_throughput() or db.last_throughput()
             verify_rate = db.avg_verify_throughput()
@@ -1927,7 +1976,11 @@ def _run_with_db(args, db, excludes, drives_path, log_path) -> int:
                 eta_str = f" \u2014 {', '.join(eta_parts)}{rate_str}"
             else:
                 eta_str = " \u2014 no ETA"
-            print(f"  {_now_hms()} [{completed + 1}/{total}] Moving {short_path} "
+            if args.limit > 0:
+                progress = f"[{completed + 1}/{limit} ({total})]"
+            else:
+                progress = f"[{completed + 1}/{total}]"
+            print(f"  {_now_hms()} {progress} Moving {short_path} "
                   f"({format_bytes(entry.size_bytes)}) "
                   f"{src_disk} -> {tgt_disk}{eta_str}")
 

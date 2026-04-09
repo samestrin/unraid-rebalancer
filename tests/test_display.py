@@ -13,7 +13,9 @@ from rebalancer import (
     format_disk_table,
     format_plan_summary,
     format_plan_summary_db,
+    format_transfer_table,
     _format_status_breakdown,
+    _short_entry_fields,
     ANSI,
 )
 
@@ -369,3 +371,116 @@ class TestFormatStatusBreakdown:
         """Zero total with zero counts should return empty list."""
         result = _format_status_breakdown({"pending": 0}, total_entries=0)
         assert result == []
+
+
+class TestShortEntryFields:
+    def test_standard_path(self):
+        entry = PlanEntry("/mnt/disk1/TV_Shows/Breaking Bad", 100, "/mnt/disk1", "/mnt/disk3")
+        short_path, src, tgt = _short_entry_fields(entry)
+        assert short_path == "TV_Shows/Breaking Bad"
+        assert src == "disk1"
+        assert tgt == "disk3"
+
+    def test_deep_path(self):
+        entry = PlanEntry("/mnt/disk2/Movies/2023/Film", 100, "/mnt/disk2", "/mnt/disk10")
+        short_path, src, tgt = _short_entry_fields(entry)
+        assert short_path == "Movies/2023/Film"
+        assert src == "disk2"
+        assert tgt == "disk10"
+
+    def test_short_path_fallback(self):
+        """Paths with 3 or fewer components fall back to basename."""
+        entry = PlanEntry("/mnt/disk1", 100, "/mnt/disk1", "/mnt/disk3")
+        short_path, _, _ = _short_entry_fields(entry)
+        assert short_path == "disk1"
+
+
+class TestFormatTransferTable:
+    def test_empty_entries_returns_empty_string(self):
+        assert format_transfer_table([], "Title:") == ""
+
+    def test_title_appears_bold(self):
+        entries = [PlanEntry("/mnt/disk1/TV/Show", 1_000_000_000, "/mnt/disk1", "/mnt/disk3")]
+        result = format_transfer_table(entries, "Current Transfer:")
+        assert "Current Transfer:" in result
+
+    def test_has_separator_line(self):
+        entries = [PlanEntry("/mnt/disk1/TV/Show", 1_000_000_000, "/mnt/disk1", "/mnt/disk3")]
+        result = format_transfer_table(entries, "Up Next:")
+        lines = result.split("\n")
+        sep_lines = [l for l in lines if l.strip().startswith("-")]
+        assert len(sep_lines) == 1
+
+    def test_shows_short_path_and_disks(self):
+        entries = [PlanEntry("/mnt/disk1/Movies/2023", 5_000_000_000, "/mnt/disk1", "/mnt/disk3")]
+        result = format_transfer_table(entries, "Up Next:")
+        assert "Movies/2023" in result
+        assert "disk1" in result
+        assert "disk3" in result
+
+    def test_shows_arrow_separator(self):
+        entries = [PlanEntry("/mnt/disk1/TV/Show", 100, "/mnt/disk1", "/mnt/disk3")]
+        result = format_transfer_table(entries, "T:")
+        assert "\u2192" in result  # →
+
+    def test_size_right_aligned(self):
+        """Size column should be right-aligned — all data lines same width."""
+        import re
+        entries = [
+            PlanEntry("/mnt/disk1/TV/Show", 1_000_000, "/mnt/disk1", "/mnt/disk3"),
+            PlanEntry("/mnt/disk2/Movies/2023", 50_000_000_000, "/mnt/disk2", "/mnt/disk5"),
+        ]
+        result = format_transfer_table(entries, "Up Next:")
+        lines = result.split("\n")
+        ansi_re = re.compile(r'\033\[[0-9;]*m')
+        sep_idx = next(i for i, l in enumerate(lines) if l.strip().startswith("-"))
+        data_lines = [l for l in lines[sep_idx + 1:] if l.strip()]
+        stripped = [ansi_re.sub('', l) for l in data_lines]
+        lengths = [len(l) for l in stripped]
+        assert len(set(lengths)) == 1, f"Column misalignment: lengths {lengths}"
+
+    def test_long_path_truncated(self):
+        """Paths longer than column width should be truncated with ellipsis."""
+        entry = PlanEntry(
+            "/mnt/disk1/Education/Very Long Directory Name That Exceeds Width",
+            100, "/mnt/disk1", "/mnt/disk3",
+        )
+        result = format_transfer_table([entry], "T:")
+        assert "\u2026" in result  # ellipsis
+        # Verify alignment still holds — data line should match header width
+        import re
+        lines = result.split("\n")
+        ansi_re = re.compile(r'\033\[[0-9;]*m')
+        sep_idx = next(i for i, l in enumerate(lines) if l.strip().startswith("-"))
+        header_stripped = ansi_re.sub('', lines[sep_idx - 1])
+        data_lines = [l for l in lines[sep_idx + 1:] if l.strip()]
+        for line in data_lines:
+            stripped = ansi_re.sub('', line)
+            assert len(stripped) == len(header_stripped), (
+                f"Long path broke alignment: '{stripped}' ({len(stripped)}) vs header ({len(header_stripped)})"
+            )
+
+    def test_header_data_separator_aligned(self):
+        """Header, separator, and data lines should all have consistent width."""
+        import re
+        entries = [
+            PlanEntry("/mnt/disk1/TV/Show", 1_000_000_000, "/mnt/disk1", "/mnt/disk3"),
+        ]
+        result = format_transfer_table(entries, "T:")
+        lines = result.split("\n")
+        ansi_re = re.compile(r'\033\[[0-9;]*m')
+        sep_idx = next(i for i, l in enumerate(lines) if l.strip().startswith("-"))
+        header_w = len(ansi_re.sub('', lines[sep_idx - 1]))
+        sep_w = len(lines[sep_idx])
+        data_w = len(ansi_re.sub('', lines[sep_idx + 1]))
+        assert header_w == sep_w == data_w, f"Widths: header={header_w}, sep={sep_w}, data={data_w}"
+
+    def test_multiple_entries(self):
+        entries = [
+            PlanEntry(f"/mnt/disk1/TV/Show{i}", 100 * i, "/mnt/disk1", "/mnt/disk3")
+            for i in range(1, 4)
+        ]
+        result = format_transfer_table(entries, "Up Next:")
+        assert "Show1" in result
+        assert "Show2" in result
+        assert "Show3" in result
