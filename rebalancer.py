@@ -1633,6 +1633,31 @@ def format_plan_summary_db(db: PlanDB) -> str:
     return "\n".join(lines)
 
 
+def format_transfer_table(entries: list[PlanEntry], title: str) -> str:
+    """Format plan entries as a transfer table with title, separator, and aligned columns."""
+    if not entries:
+        return ""
+
+    PATH_W = 30
+    SRC_W = 8
+    TGT_W = 8
+    SIZE_W = 10
+
+    lines = [ANSI.bold(title), ""]
+    header = f"  {'Path':<{PATH_W}} {'Source':>{SRC_W}}    {'Target':>{TGT_W}} {'Size':>{SIZE_W}}"
+    lines.append(ANSI.bold(header))
+    lines.append("  " + "-" * (PATH_W + SRC_W + TGT_W + SIZE_W + 8))
+
+    for entry in entries:
+        short_path, src_disk, tgt_disk = _short_entry_fields(entry)
+        size_str = format_bytes(entry.size_bytes)
+        lines.append(
+            f"  {short_path:<{PATH_W}} {src_disk:>{SRC_W}}  \u2192  {tgt_disk:<{TGT_W}} {size_str:>{SIZE_W}}"
+        )
+
+    return "\n".join(lines)
+
+
 def _resolve_state_dir(argv: list[str] | None) -> Path:
     """Resolve state directory from --state-dir flag, env var, or default.
 
