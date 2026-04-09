@@ -13,6 +13,7 @@ from rebalancer import (
     format_disk_table,
     format_plan_summary,
     format_plan_summary_db,
+    format_transfer_table,
     _format_status_breakdown,
     _short_entry_fields,
     ANSI,
@@ -392,3 +393,58 @@ class TestShortEntryFields:
         entry = PlanEntry("/mnt/disk1", 100, "/mnt/disk1", "/mnt/disk3")
         short_path, _, _ = _short_entry_fields(entry)
         assert short_path == "disk1"
+
+
+class TestFormatTransferTable:
+    def test_empty_entries_returns_empty_string(self):
+        assert format_transfer_table([], "Title:") == ""
+
+    def test_title_appears_bold(self):
+        entries = [PlanEntry("/mnt/disk1/TV/Show", 1_000_000_000, "/mnt/disk1", "/mnt/disk3")]
+        result = format_transfer_table(entries, "Current Transfer:")
+        assert "Current Transfer:" in result
+
+    def test_has_separator_line(self):
+        entries = [PlanEntry("/mnt/disk1/TV/Show", 1_000_000_000, "/mnt/disk1", "/mnt/disk3")]
+        result = format_transfer_table(entries, "Up Next:")
+        lines = result.split("\n")
+        sep_lines = [l for l in lines if l.strip().startswith("-")]
+        assert len(sep_lines) == 1
+
+    def test_shows_short_path_and_disks(self):
+        entries = [PlanEntry("/mnt/disk1/Movies/2023", 5_000_000_000, "/mnt/disk1", "/mnt/disk3")]
+        result = format_transfer_table(entries, "Up Next:")
+        assert "Movies/2023" in result
+        assert "disk1" in result
+        assert "disk3" in result
+
+    def test_shows_arrow_separator(self):
+        entries = [PlanEntry("/mnt/disk1/TV/Show", 100, "/mnt/disk1", "/mnt/disk3")]
+        result = format_transfer_table(entries, "T:")
+        assert "\u2192" in result  # →
+
+    def test_size_right_aligned(self):
+        """Size column should be right-aligned — all data lines same width."""
+        import re
+        entries = [
+            PlanEntry("/mnt/disk1/TV/Show", 1_000_000, "/mnt/disk1", "/mnt/disk3"),
+            PlanEntry("/mnt/disk2/Movies/2023", 50_000_000_000, "/mnt/disk2", "/mnt/disk5"),
+        ]
+        result = format_transfer_table(entries, "Up Next:")
+        lines = result.split("\n")
+        ansi_re = re.compile(r'\033\[[0-9;]*m')
+        sep_idx = next(i for i, l in enumerate(lines) if l.strip().startswith("-"))
+        data_lines = [l for l in lines[sep_idx + 1:] if l.strip()]
+        stripped = [ansi_re.sub('', l) for l in data_lines]
+        lengths = [len(l) for l in stripped]
+        assert len(set(lengths)) == 1, f"Column misalignment: lengths {lengths}"
+
+    def test_multiple_entries(self):
+        entries = [
+            PlanEntry(f"/mnt/disk1/TV/Show{i}", 100 * i, "/mnt/disk1", "/mnt/disk3")
+            for i in range(1, 4)
+        ]
+        result = format_transfer_table(entries, "Up Next:")
+        assert "Show1" in result
+        assert "Show2" in result
+        assert "Show3" in result
