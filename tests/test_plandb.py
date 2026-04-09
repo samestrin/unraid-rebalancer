@@ -130,14 +130,16 @@ class TestPlanDBCore:
         assert db.total_bytes() == 300
         db.close()
 
-    def test_pending_bytes(self, state_dir):
+    def test_remaining_bytes(self, state_dir):
         db = PlanDB(state_dir / PLAN_DB_FILE)
         db.write_plan([
             PlanEntry("/a", 100, "/s", "/t", status="pending"),
             PlanEntry("/b", 200, "/s", "/t", status="cleaned"),
             PlanEntry("/c", 300, "/s", "/t", status="pending"),
+            PlanEntry("/d", 150, "/s", "/t", status="in_progress"),
         ])
-        assert db.pending_bytes() == 400
+        # remaining = pending (100 + 300) + in_progress (150) = 550
+        assert db.remaining_bytes() == 550
         db.close()
 
     def test_has_plan_empty(self, state_dir):
@@ -195,7 +197,7 @@ class TestPlanDBCore:
         db = PlanDB(state_dir / PLAN_DB_FILE)
         assert db.summary() == {}
         assert db.total_bytes() == 0
-        assert db.pending_bytes() == 0
+        assert db.remaining_bytes() == 0
         db.close()
 
     def test_empty_write_clears_existing(self, state_dir):

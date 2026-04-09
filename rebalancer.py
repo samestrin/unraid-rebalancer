@@ -433,10 +433,11 @@ class PlanDB:
         ).fetchone()
         return row[0]
 
-    def pending_bytes(self) -> int:
-        """Sum of pending entry sizes."""
+    def remaining_bytes(self) -> int:
+        """Sum of pending and in_progress entry sizes (all unfinished work)."""
         row = self.conn.execute(
-            "SELECT COALESCE(SUM(size_bytes), 0) FROM plan WHERE status = 'pending'"
+            "SELECT COALESCE(SUM(size_bytes), 0) FROM plan "
+            "WHERE status IN ('pending', 'in_progress')"
         ).fetchone()
         return row[0]
 
@@ -1427,7 +1428,7 @@ def format_plan_summary(entries: list[PlanEntry]) -> str:
     total_entries = len(entries)
     counts = Counter(e.status for e in entries)
     total_bytes = sum(e.size_bytes for e in entries)
-    pending_bytes = sum(e.size_bytes for e in entries if e.status == "pending")
+    pending_bytes = sum(e.size_bytes for e in entries if e.status in ("pending", "in_progress"))
 
     lines = [ANSI.bold("Plan Summary:"), ""]
     lines.append(f"  Total entries:    {total_entries}")
@@ -1593,7 +1594,7 @@ def format_plan_summary_db(db: PlanDB) -> str:
         return "No plan entries."
     total_entries = sum(counts.values())
     total_bytes = db.total_bytes()
-    pending_bytes = db.pending_bytes()
+    pending_bytes = db.remaining_bytes()
     active_count = db.get_meta("active_dir_count")
 
     lines = [ANSI.bold("Plan Summary:"), ""]
