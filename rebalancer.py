@@ -27,7 +27,7 @@ from pathlib import Path
 # Constants
 # =============================================================================
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 STATE_DIR = Path.home() / ".unraid-rebalancer"
 DEFAULT_MAX_USED = 80
