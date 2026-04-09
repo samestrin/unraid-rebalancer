@@ -38,6 +38,7 @@ CONFIG_FILE = "config.json"
 YEAR_PATTERN_SHARES = ["Movies"]
 LOCK_FILE = "rebalancer.lock"
 REQUIRED_TOOLS = ["rsync", "lsof", "du", "df", "rm", "mkdir", "ls", "test"]
+STRATEGIES = ("fullest-first", "largest-first", "smallest-first")
 PLAN_DB_FILE = "plan.db"
 
 BANNER = r'''
@@ -899,6 +900,27 @@ def _find_best_target(
     return fallback
 
 
+def select_best_strategy(
+    units: list[MovableUnit],
+    overloaded: list[DiskInfo],
+    underloaded: list[DiskInfo],
+    max_used: int,
+    min_free: int,
+) -> tuple[str, list[PlanEntry]]:
+    """Run all concrete strategies and return (name, plan) with fewest bytes moved."""
+    best_name = STRATEGIES[0]
+    best_plan: list[PlanEntry] = []
+    best_bytes = float("inf")
+    for s in STRATEGIES:
+        candidate = generate_plan(units, overloaded, underloaded, s, max_used, min_free)
+        total = sum(e.size_bytes for e in candidate)
+        if candidate and (total < best_bytes or not best_plan):
+            best_name = s
+            best_plan = candidate
+            best_bytes = total
+    return best_name, best_plan
+
+
 def generate_plan(
     units: list[MovableUnit],
     overloaded: list[DiskInfo],
@@ -913,7 +935,12 @@ def generate_plan(
     - fullest-first: Process fullest overloaded disk first, move largest units
     - largest-first: Move largest units first across all overloaded disks
     - smallest-first: Move smallest units first across all overloaded disks
+    - auto: Run all three strategies and pick the plan with fewest total bytes
     """
+    if strategy == "auto":
+        chosen, plan = select_best_strategy(units, overloaded, underloaded, max_used, min_free)
+        return plan
+
     if not units:
         return []
 
@@ -1478,7 +1505,7 @@ def build_parser(config: dict | None = None) -> argparse.ArgumentParser:
         help=f"Target max usage percentage per disk (default: {cfg.get('max_used', 80)})",
     )
     parser.add_argument(
-        "--strategy", choices=["fullest-first", "largest-first", "smallest-first"],
+        "--strategy", choices=list(STRATEGIES) + ["auto"],
         default=cfg.get("strategy", "fullest-first"),
         help=f"Rebalancing strategy (default: {cfg.get('strategy', 'fullest-first')})",
     )
@@ -1890,12 +1917,20 @@ def _run_with_db(args, db, excludes, drives_path, log_path) -> int:
         print()
 
         over, under = classify_disks(disks, args.max_used)
-        plan = generate_plan(
-            all_units, over, under,
-            strategy=args.strategy,
-            max_used=args.max_used,
-            min_free=args.min_free_space_bytes,
-        )
+        if args.strategy == "auto":
+            chosen, plan = select_best_strategy(
+                all_units, over, under,
+                max_used=args.max_used,
+                min_free=args.min_free_space_bytes,
+            )
+            print(f"Strategy: auto (selected {chosen})")
+        else:
+            plan = generate_plan(
+                all_units, over, under,
+                strategy=args.strategy,
+                max_used=args.max_used,
+                min_free=args.min_free_space_bytes,
+            )
         db.write_plan(plan)
         print(format_plan_summary(plan))
 

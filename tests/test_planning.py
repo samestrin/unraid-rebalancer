@@ -8,6 +8,8 @@ from rebalancer import (
     PlanEntry,
     classify_disks,
     generate_plan,
+    select_best_strategy,
+    STRATEGIES,
 )
 
 
@@ -221,6 +223,95 @@ class TestGeneratePlan:
         plan = generate_plan(units, over, under, strategy="fullest-first", max_used=80, min_free=0)
         for entry in plan:
             assert entry.source_disk != "/mnt/disk2"
+
+    def test_auto_strategy_picks_fewest_bytes(self):
+        """Auto strategy should pick the plan that moves the fewest bytes."""
+        disks = [
+            DiskInfo("/mnt/disk1", 1_000_000, 900_000, 100_000, 90),
+            DiskInfo("/mnt/disk2", 1_000_000, 200_000, 800_000, 20),
+        ]
+        units = [
+            MovableUnit("/mnt/disk1/TV_Shows/Large", "TV_Shows", "Large", 100_000, "/mnt/disk1"),
+            MovableUnit("/mnt/disk1/TV_Shows/Small", "TV_Shows", "Small", 10_000, "/mnt/disk1"),
+        ]
+        over, under = classify_disks(disks, max_used=80)
+        plan = generate_plan(units, over, under, strategy="auto", max_used=80, min_free=0)
+        assert len(plan) > 0
+        # Auto should produce a valid plan
+        for entry in plan:
+            assert entry.status == "pending"
+
+    def test_auto_strategy_respects_constraints(self):
+        """Auto must still respect max_used and min_free constraints."""
+        disks = [
+            DiskInfo("/mnt/disk1", 1_000_000, 950_000, 50_000, 95),
+            DiskInfo("/mnt/disk2", 1_000_000, 750_000, 250_000, 75),
+        ]
+        units = [
+            MovableUnit("/mnt/disk1/TV_Shows/ShowA", "TV_Shows", "ShowA", 200_000, "/mnt/disk1"),
+            MovableUnit("/mnt/disk1/TV_Shows/ShowB", "TV_Shows", "ShowB", 100_000, "/mnt/disk1"),
+        ]
+        over, under = classify_disks(disks, max_used=80)
+        plan = generate_plan(units, over, under, strategy="auto", max_used=80, min_free=0)
+        moved_bytes = sum(e.size_bytes for e in plan)
+        projected = 750_000 + moved_bytes
+        assert projected <= 800_000
+
+    def test_auto_strategy_returns_same_as_best(self):
+        """Auto should return the same plan as the best individual strategy."""
+        disks = [
+            DiskInfo("/mnt/disk1", 1_000_000, 900_000, 100_000, 90),
+            DiskInfo("/mnt/disk2", 1_000_000, 850_000, 150_000, 85),
+            DiskInfo("/mnt/disk3", 1_000_000, 200_000, 800_000, 20),
+        ]
+        units = [
+            MovableUnit("/mnt/disk1/TV_Shows/A", "TV_Shows", "A", 50_000, "/mnt/disk1"),
+            MovableUnit("/mnt/disk1/TV_Shows/B", "TV_Shows", "B", 30_000, "/mnt/disk1"),
+            MovableUnit("/mnt/disk2/Anime/C", "Anime", "C", 40_000, "/mnt/disk2"),
+        ]
+        over, under = classify_disks(disks, max_used=80)
+
+        # Generate plans for all concrete strategies
+        plans = {}
+        for s in STRATEGIES:
+            plans[s] = generate_plan(units, over, under, strategy=s, max_used=80, min_free=0)
+
+        auto_plan = generate_plan(units, over, under, strategy="auto", max_used=80, min_free=0)
+
+        # Auto should match the strategy with fewest bytes
+        best_bytes = min(sum(e.size_bytes for e in p) for p in plans.values() if p)
+        auto_bytes = sum(e.size_bytes for e in auto_plan)
+        assert auto_bytes == best_bytes
+
+    def test_auto_with_empty_units(self):
+        disks = [
+            DiskInfo("/mnt/disk1", 1_000_000, 900_000, 100_000, 90),
+            DiskInfo("/mnt/disk2", 1_000_000, 200_000, 800_000, 20),
+        ]
+        over, under = classify_disks(disks, max_used=80)
+        plan = generate_plan([], over, under, strategy="auto", max_used=80, min_free=0)
+        assert plan == []
+
+    def test_strategies_constant_has_all_concrete(self):
+        """STRATEGIES should contain exactly the three concrete strategies."""
+        assert "fullest-first" in STRATEGIES
+        assert "largest-first" in STRATEGIES
+        assert "smallest-first" in STRATEGIES
+        assert "auto" not in STRATEGIES
+
+    def test_select_best_strategy_returns_name_and_plan(self):
+        """select_best_strategy should return (strategy_name, plan) tuple."""
+        disks = [
+            DiskInfo("/mnt/disk1", 1_000_000, 900_000, 100_000, 90),
+            DiskInfo("/mnt/disk2", 1_000_000, 200_000, 800_000, 20),
+        ]
+        units = [
+            MovableUnit("/mnt/disk1/TV_Shows/A", "TV_Shows", "A", 50_000, "/mnt/disk1"),
+        ]
+        over, under = classify_disks(disks, max_used=80)
+        name, plan = select_best_strategy(units, over, under, max_used=80, min_free=0)
+        assert name in STRATEGIES
+        assert len(plan) > 0
 
     def test_fills_lowest_usage_target_first(self):
         """When multiple targets exist, fill the lowest-usage one first."""
