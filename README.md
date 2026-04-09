@@ -15,7 +15,7 @@ Rebalance data across Unraid disk array drives. Moves folders from overloaded di
 
 - **Hybrid rebalancing**: drains disks above threshold (only as much as needed), fills the lowest-usage target first. When all disks exceed the threshold, still makes progress by moving from the fullest to the least-full.
 - **Three-phase transfer**: rsync copy (`-aHP` with partial resume), checksum verify (`--itemize-changes`, directory-only attribute changes filtered out), delete source. Source is never deleted unless verification confirms an exact match. Crash-safe: resumes partial transfers automatically.
-- **Configurable**: `~/.unraid-rebalancer/config.json` sets persistent defaults (excludes, thresholds, schedule). CLI flags override config values. State directory overridable via `--state-dir` or `UNRAID_REBALANCER_STATE_DIR` env var.
+- **Configurable**: `/boot/config/plugins/rebalancer/config.json` sets persistent defaults (excludes, thresholds, schedule). CLI flags override config values. State directory overridable via `--state-dir` or `UNRAID_REBALANCER_STATE_DIR` env var.
 - **SQLite state**: plan stored in WAL-mode SQLite for crash safety, O(1) status updates, and concurrent `--status` reads during execution.
 - **Pause/resume**: Ctrl+C or `kill <pid>` (SIGTERM) gracefully finishes current transfer. Double Ctrl+C within 3 seconds force exits. Interrupted transfers recover automatically on restart.
 - **Active hours**: `--active-hours 22:00-06:00` to only run during off-peak times (supports overnight ranges). Start and end times must differ. Note: a transfer in progress runs to completion even if the window ends.
@@ -35,19 +35,25 @@ Rebalance data across Unraid disk array drives. Moves folders from overloaded di
 
 1. Download `rebalancer.py` from [releases](https://github.com/samestrin/unraid-rebalancer/releases) or clone the repo
 
-2. Copy to your Unraid server:
+2. Copy to your Unraid server (persistent storage that survives reboots):
    ```bash
-   scp rebalancer.py root@<your-unraid-host>:/usr/local/bin/
+   ssh root@<your-unraid-host> "mkdir -p /boot/config/plugins/rebalancer"
+   scp rebalancer.py root@<your-unraid-host>:/boot/config/plugins/rebalancer/
    ```
 
-3. Make it executable:
+3. Create a symlink so it's in your PATH:
    ```bash
-   ssh root@<your-unraid-host> "chmod +x /usr/local/bin/rebalancer.py"
+   ssh root@<your-unraid-host> "chmod +x /boot/config/plugins/rebalancer/rebalancer.py && ln -sf /boot/config/plugins/rebalancer/rebalancer.py /usr/local/bin/rebalancer.py"
    ```
 
-4. Generate default config:
+4. Make the symlink persist across reboots by adding this line to `/boot/config/go`:
    ```bash
-   ssh root@<your-unraid-host> "python3 /usr/local/bin/rebalancer.py --init-config"
+   ln -sf /boot/config/plugins/rebalancer/rebalancer.py /usr/local/bin/rebalancer.py
+   ```
+
+5. Generate default config:
+   ```bash
+   ssh root@<your-unraid-host> "python3 rebalancer.py --init-config"
    ```
 
 ## Configuration
@@ -58,7 +64,7 @@ On first run, generate a config file:
 python3 rebalancer.py --init-config
 ```
 
-This creates `~/.unraid-rebalancer/config.json`:
+This creates `/boot/config/plugins/rebalancer/config.json`:
 
 ```json
 {
@@ -172,11 +178,11 @@ python3 rebalancer.py --state-dir /mnt/cache/rebalancer-state --dry-run
 | `-y`, `--yes` | off | Skip confirmation prompts |
 | `--verbose` | off | Detailed output |
 | `--progress` | off | Show live rsync progress during transfers |
-| `--state-dir` | `~/.unraid-rebalancer/` | Override state directory (also: `UNRAID_REBALANCER_STATE_DIR` env var) |
+| `--state-dir` | `/boot/config/plugins/rebalancer/` | Override state directory (also: `UNRAID_REBALANCER_STATE_DIR` env var) |
 
 ## State Files
 
-Stored in `~/.unraid-rebalancer/`:
+Stored in `/boot/config/plugins/rebalancer/`:
 
 | File | Format | Purpose |
 |------|--------|---------|
