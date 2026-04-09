@@ -29,7 +29,7 @@ from pathlib import Path
 
 __version__ = "0.2.0"
 
-STATE_DIR = Path.home() / ".unraid-rebalancer"
+STATE_DIR = Path("/boot/config/plugins/rebalancer")
 DEFAULT_MAX_USED = 80
 PLAN_FILE = "plan.csv"
 DRIVES_FILE = "drives.json"
@@ -1607,7 +1607,7 @@ def build_parser(config: dict | None = None) -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--state-dir", type=str, default=None,
-        help="Override state directory (default: ~/.unraid-rebalancer/). "
+        help="Override state directory (default: /boot/config/plugins/rebalancer/). "
              "Also settable via UNRAID_REBALANCER_STATE_DIR env var.",
     )
     return parser
