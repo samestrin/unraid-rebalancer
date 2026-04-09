@@ -1592,21 +1592,22 @@ def format_plan_summary_db(db: PlanDB) -> str:
     total_entries = sum(counts.values())
     total_bytes = db.total_bytes()
     pending_bytes = db.pending_bytes()
-    lines = [
-        ANSI.bold("Plan Summary"),
-        f"  Total entries: {total_entries}",
-        f"  Total size:    {format_bytes(total_bytes)}",
-    ]
-    for status in ("pending", "in_progress", "cleaned", "skipped",
-                    "skipped_full", "skipped_in_use", "error_path", "error_copy",
-                    "error_verify", "error_delete", "error_timeout"):
-        if counts.get(status, 0) > 0:
-            lines.append(f"  {status:<20} {counts[status]}")
+    active_count = db.get_meta("active_dir_count")
+
+    lines = [ANSI.bold("Plan Summary:"), ""]
+    lines.append(f"  Total entries:    {total_entries}")
+    lines.append(f"  Total size:       {format_bytes(total_bytes)}")
     if pending_bytes > 0:
-        lines.append(f"  Remaining:     {format_bytes(pending_bytes)}")
+        lines.append(f"  Remaining:        {format_bytes(pending_bytes)}")
         rate = db.avg_copy_throughput() or db.avg_throughput()
         if rate is not None and rate > 0:
-            lines.append(f"  Estimated time: {format_eta(pending_bytes / rate)}")
+            lines.append(f"  Estimated time:   {format_eta(pending_bytes / rate)}")
+    lines.append("")
+
+    active_suffix = None
+    if active_count and counts.get("in_progress", 0) > 0:
+        active_suffix = f"{active_count} active"
+    lines.extend(_format_status_breakdown(counts, total_entries, active_suffix))
     return "\n".join(lines)
 
 

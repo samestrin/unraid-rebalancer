@@ -8,9 +8,11 @@ import pytest
 from rebalancer import (
     DiskInfo,
     PlanEntry,
+    PlanDB,
     format_bytes,
     format_disk_table,
     format_plan_summary,
+    format_plan_summary_db,
     ANSI,
 )
 
@@ -179,3 +181,70 @@ class TestFormatPlanSummary:
         entries = [PlanEntry("/a", 1_000_000_000_000, "/s", "/t", status="pending")]
         summary = format_plan_summary(entries)
         assert "TB" in summary or "GB" in summary
+
+
+class TestFormatPlanSummaryDB:
+    def test_header_with_colon(self, state_dir, db_path):
+        db = PlanDB(db_path)
+        db.write_plan([PlanEntry("/a", 100, "/s", "/t", status="pending")])
+        summary = format_plan_summary_db(db)
+        assert "Plan Summary:" in summary
+        db.close()
+
+    def test_active_dir_count_shown(self, state_dir, db_path):
+        db = PlanDB(db_path)
+        db.write_plan([
+            PlanEntry("/a", 100, "/s", "/t", status="in_progress"),
+            PlanEntry("/b", 200, "/s", "/t", status="pending"),
+        ])
+        db.set_meta("active_dir_count", "3")
+        summary = format_plan_summary_db(db)
+        assert "[3 active]" in summary
+        db.close()
+
+    def test_active_suffix_only_on_in_progress(self, state_dir, db_path):
+        db = PlanDB(db_path)
+        db.write_plan([PlanEntry("/a", 100, "/s", "/t", status="pending")])
+        db.set_meta("active_dir_count", "2")
+        summary = format_plan_summary_db(db)
+        assert "[2 active]" not in summary
+        db.close()
+
+    def test_no_meta_key_no_active_suffix(self, state_dir, db_path):
+        db = PlanDB(db_path)
+        db.write_plan([PlanEntry("/a", 100, "/s", "/t", status="in_progress")])
+        summary = format_plan_summary_db(db)
+        assert "  In Progress" in summary
+        assert "[active]" not in summary
+        db.close()
+
+    def test_percentages_sum_to_100(self, state_dir, db_path):
+        import re
+        db = PlanDB(db_path)
+        db.write_plan([
+            PlanEntry("/a", 100, "/s", "/t", status="pending"),
+            PlanEntry("/b", 200, "/s", "/t", status="cleaned"),
+            PlanEntry("/c", 300, "/s", "/t", status="error_copy"),
+        ])
+        summary = format_plan_summary_db(db)
+        pcts = [float(m) for m in re.findall(r"\(\s*([\d.]+)%\)", summary)]
+        assert sum(pcts) == pytest.approx(100.0, abs=0.2)
+        db.close()
+
+    def test_remaining_before_estimated_time(self, state_dir, db_path):
+        db = PlanDB(db_path)
+        db.write_plan([PlanEntry("/a", 1_000_000_000, "/s", "/t", status="pending")])
+        # Record throughput so ETA shows up
+        db.record_copy_throughput(1_000_000_000, 100.0)
+        summary = format_plan_summary_db(db)
+        lines = summary.split("\n")
+        remaining_idx = next(i for i, l in enumerate(lines) if "Remaining:" in l)
+        eta_idx = next(i for i, l in enumerate(lines) if "Estimated time:" in l)
+        assert remaining_idx < eta_idx
+        db.close()
+
+    def test_empty_plan_returns_no_plan_message(self, state_dir, db_path):
+        db = PlanDB(db_path)
+        summary = format_plan_summary_db(db)
+        assert "No plan entries." in summary
+        db.close()
