@@ -20,7 +20,7 @@ Rebalance data across Unraid disk array drives. Moves folders from overloaded di
 - **Pause/resume**: Ctrl+C or `kill <pid>` (SIGTERM) gracefully finishes current transfer. Double Ctrl+C within 3 seconds force exits. Interrupted transfers recover automatically on restart.
 - **Active hours**: `--active-hours 22:00-06:00` to only run during off-peak times (supports overnight ranges). Start and end times must differ. Note: a transfer in progress runs to completion even if the window ends.
 - **Strategies**: `fullest-first` (default), `largest-first`, `smallest-first`
-- **Remote mode**: run from your Mac, transfers execute on Unraid via SSH (`BatchMode=yes`)
+- **Remote mode**: run from your Mac, or Linux machine, transfers execute on Unraid via SSH (`BatchMode=yes`)
 - **Safety**: lsof checks for open files, pre-transfer disk space recheck, path validation (requires `/mnt/diskN/share/item` depth), symlink rejection before delete (prevents `rm -rf` following symlinks), lock file prevents concurrent runs, confirmation prompts before execution, timed-out child processes are killed (no orphaned rsync)
 - **Progress output**: `--progress` shows live rsync transfer progress during copy phase
 - **Error diagnostics**: failed transfers log rsync stderr to `transfers.log` for headless debugging
