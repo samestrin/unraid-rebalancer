@@ -1384,6 +1384,18 @@ def _title_case_status(status: str) -> str:
     return status.replace("_", " ").title()
 
 
+def _short_entry_fields(entry: PlanEntry) -> tuple[str, str, str]:
+    """Extract short display fields from a plan entry.
+
+    Returns (short_path, src_disk, tgt_disk) for display purposes.
+    """
+    parts = entry.path.split("/")
+    short_path = "/".join(parts[3:]) if len(parts) > 3 else os.path.basename(entry.path)
+    src_disk = entry.source_disk.split("/")[-1]
+    tgt_disk = entry.target_disk.split("/")[-1]
+    return short_path, src_disk, tgt_disk
+
+
 def _format_status_breakdown(
     counts: dict[str, int],
     total_entries: int,
@@ -1911,11 +1923,7 @@ def _run_with_db(args, db, excludes, drives_path, log_path) -> int:
 
             # Transfer
             db.update_status(entry.path, "in_progress")
-            # Show share/item (e.g., "Movies/2023") and short disk names (e.g., "disk4")
-            parts = entry.path.split("/")
-            short_path = "/".join(parts[3:]) if len(parts) > 3 else os.path.basename(entry.path)
-            src_disk = entry.source_disk.split("/")[-1]
-            tgt_disk = entry.target_disk.split("/")[-1]
+            short_path, src_disk, tgt_disk = _short_entry_fields(entry)
             copy_rate = db.avg_copy_throughput() or db.avg_throughput()
             last_rate = db.last_copy_throughput() or db.last_throughput()
             verify_rate = db.avg_verify_throughput()
