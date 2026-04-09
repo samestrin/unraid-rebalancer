@@ -815,6 +815,39 @@ def scan_movable_units(
 
 
 # =============================================================================
+# Duplicate Detection
+# =============================================================================
+
+
+def find_duplicates(
+    units: list[MovableUnit],
+    disk_usage: dict[str, int] | None = None,
+) -> list[list[MovableUnit]]:
+    """Find items that exist on multiple disks.
+
+    Groups by (share, name). Returns groups with 2+ members.
+    Within each group, units sorted by disk usage descending (fuller first),
+    so group[0] is the candidate for deletion and group[-1] is kept.
+    """
+    from collections import defaultdict
+    groups: dict[tuple[str, str], list[MovableUnit]] = defaultdict(list)
+    for unit in units:
+        groups[(unit.share, unit.name)].append(unit)
+
+    result = []
+    for key, group in sorted(groups.items()):
+        if len(group) < 2:
+            continue
+        if disk_usage:
+            group.sort(key=lambda u: disk_usage.get(u.disk, 0), reverse=True)
+        else:
+            group.sort(key=lambda u: u.disk)
+        result.append(group)
+
+    return result
+
+
+# =============================================================================
 # Plan Generation
 # =============================================================================
 
