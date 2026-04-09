@@ -211,6 +211,58 @@ class TestFullPipeline:
         assert "Total entries:" in output
         assert "%" in output
 
+    def test_status_shows_current_transfer(self, state_dir, db_path, mocker, capsys):
+        mocker.patch("rebalancer.STATE_DIR", state_dir)
+
+        db = PlanDB(db_path)
+        db.write_plan([
+            PlanEntry("/mnt/disk1/Movies/2023", 5_000_000_000, "/mnt/disk1", "/mnt/disk3", status="in_progress"),
+            PlanEntry("/mnt/disk2/TV/ShowA", 1_000_000_000, "/mnt/disk2", "/mnt/disk5", status="pending"),
+        ])
+        db.close()
+
+        result = main(["--status"])
+        assert result == 0
+        output = capsys.readouterr().out
+        assert "Current Transfer:" in output
+        assert "Movies/2023" in output
+        assert "disk1" in output
+
+    def test_status_shows_up_next(self, state_dir, db_path, mocker, capsys):
+        mocker.patch("rebalancer.STATE_DIR", state_dir)
+
+        db = PlanDB(db_path)
+        entries = [
+            PlanEntry(f"/mnt/disk1/TV/Show{i}", 100_000_000 * i, "/mnt/disk1", "/mnt/disk3", status="pending")
+            for i in range(1, 8)
+        ]
+        db.write_plan(entries)
+        db.close()
+
+        result = main(["--status"])
+        assert result == 0
+        output = capsys.readouterr().out
+        assert "Up Next:" in output
+        # Should show first 5 only
+        assert "Show1" in output
+        assert "Show5" in output
+        assert "Show6" not in output
+
+    def test_status_no_pending_no_up_next(self, state_dir, db_path, mocker, capsys):
+        mocker.patch("rebalancer.STATE_DIR", state_dir)
+
+        db = PlanDB(db_path)
+        db.write_plan([
+            PlanEntry("/mnt/disk1/A", 100, "/mnt/disk1", "/mnt/disk3", status="cleaned"),
+        ])
+        db.close()
+
+        result = main(["--status"])
+        assert result == 0
+        output = capsys.readouterr().out
+        assert "Up Next:" not in output
+        assert "Current Transfer:" not in output
+
     def test_limit_stops_after_n_transfers(self, state_dir, db_path, mocker, capsys):
         mocker.patch("rebalancer.STATE_DIR", state_dir)
         mocker.patch("rebalancer.setup_signal_handlers")
