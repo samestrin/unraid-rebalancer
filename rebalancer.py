@@ -1362,17 +1362,19 @@ def format_disk_table(disks: list[DiskInfo], max_used: int = DEFAULT_MAX_USED) -
     lines.append("-" * 52)
     for d in disks:
         name = d.path.split("/")[-1]
-        pct_str = f"{d.used_pct}%"
+        # Pad the raw string before wrapping in ANSI color to avoid
+        # escape codes inflating the visible width calculation
+        pct_padded = f"{d.used_pct}%".rjust(5)
         if d.used_pct > max_used:
-            pct_str = ANSI.red(pct_str)
+            pct_display = ANSI.red(pct_padded)
         elif d.used_pct > max_used - 10:
-            pct_str = ANSI.yellow(pct_str)
+            pct_display = ANSI.yellow(pct_padded)
         else:
-            pct_str = ANSI.green(pct_str)
+            pct_display = ANSI.green(pct_padded)
         lines.append(
             f"{name:<16} {format_bytes(d.total_bytes):>8} "
             f"{format_bytes(d.used_bytes):>8} {format_bytes(d.free_bytes):>8} "
-            f"{pct_str:>7}"
+            f"  {pct_display}"
         )
     return "\n".join(lines)
 
