@@ -1387,6 +1387,8 @@ def _format_status_breakdown(
     active_suffix: str | None = None,
 ) -> list[str]:
     """Format status breakdown lines with percentages."""
+    if total_entries == 0:
+        return []
     always_show = {"pending", "in_progress", "cleaned"}
     status_order = (
         "pending",
