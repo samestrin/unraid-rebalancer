@@ -1,5 +1,6 @@
 """Tests for disk discovery — Phase 2 RED."""
 
+import os
 from unittest.mock import MagicMock
 
 import pytest
@@ -85,6 +86,23 @@ class TestRunCmd:
             run_cmd(["sleep", "999"], timeout=1, passthrough=True)
         mock_proc.kill.assert_called_once()
         mock_proc.wait.assert_called_once()
+
+    def test_child_process_isolated_from_sigint(self, mocker):
+        """Child processes must run in own process group to avoid SIGINT propagation."""
+        mock, _ = self._mock_popen(mocker)
+        run_cmd(["rsync", "-aHP", "/src/", "/dst/"])
+        call_kwargs = mock.call_args[1]
+        assert call_kwargs.get("preexec_fn") is os.setpgrp, (
+            "Popen must use preexec_fn=os.setpgrp to isolate child from SIGINT"
+        )
+
+    def test_passthrough_also_isolated(self, mocker):
+        """Passthrough mode must also isolate child from SIGINT."""
+        mock, mock_proc = self._mock_popen(mocker)
+        mock_proc.communicate.return_value = (None, "")
+        run_cmd(["rsync", "-aHP", "/src/", "/dst/"], passthrough=True)
+        call_kwargs = mock.call_args[1]
+        assert call_kwargs.get("preexec_fn") is os.setpgrp
 
 
 # --- parse_df_output ---

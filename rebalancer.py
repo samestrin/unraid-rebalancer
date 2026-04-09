@@ -598,10 +598,17 @@ def run_cmd(
             "-o", "ServerAliveCountMax=3",
             remote, safe_cmd,
         ]
+    # preexec_fn=os.setpgrp puts the child in its own process group so
+    # SIGINT from Ctrl+C only reaches our Python process, not the child.
+    # This lets the current rsync/rm finish cleanly before we stop.
+    # On double Ctrl+C (force exit), the child may be orphaned but data
+    # is safe — rsync is idempotent and in_progress entries recover on restart.
     if passthrough:
-        proc = subprocess.Popen(cmd, stderr=subprocess.PIPE, text=True)
+        proc = subprocess.Popen(cmd, stderr=subprocess.PIPE, text=True,
+                                preexec_fn=os.setpgrp)
     else:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                preexec_fn=os.setpgrp)
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
