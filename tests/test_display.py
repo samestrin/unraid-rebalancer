@@ -14,6 +14,7 @@ from rebalancer import (
     format_plan_summary,
     format_plan_summary_db,
     _format_status_breakdown,
+    _short_entry_fields,
     ANSI,
 )
 
@@ -369,3 +370,25 @@ class TestFormatStatusBreakdown:
         """Zero total with zero counts should return empty list."""
         result = _format_status_breakdown({"pending": 0}, total_entries=0)
         assert result == []
+
+
+class TestShortEntryFields:
+    def test_standard_path(self):
+        entry = PlanEntry("/mnt/disk1/TV_Shows/Breaking Bad", 100, "/mnt/disk1", "/mnt/disk3")
+        short_path, src, tgt = _short_entry_fields(entry)
+        assert short_path == "TV_Shows/Breaking Bad"
+        assert src == "disk1"
+        assert tgt == "disk3"
+
+    def test_deep_path(self):
+        entry = PlanEntry("/mnt/disk2/Movies/2023/Film", 100, "/mnt/disk2", "/mnt/disk10")
+        short_path, src, tgt = _short_entry_fields(entry)
+        assert short_path == "Movies/2023/Film"
+        assert src == "disk2"
+        assert tgt == "disk10"
+
+    def test_short_path_fallback(self):
+        """Paths with 3 or fewer components fall back to basename."""
+        entry = PlanEntry("/mnt/disk1", 100, "/mnt/disk1", "/mnt/disk3")
+        short_path, _, _ = _short_entry_fields(entry)
+        assert short_path == "disk1"
