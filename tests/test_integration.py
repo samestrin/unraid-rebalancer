@@ -270,6 +270,93 @@ class TestFullPipeline:
         assert "Up Next:" not in output
         assert "Current Transfer:" not in output
 
+    def test_est_prefix_on_moving_line_with_throughput(self, state_dir, db_path, mocker, capsys):
+        """Moving line should show 'Est.' prefix when throughput history exists."""
+        mocker.patch("rebalancer.STATE_DIR", state_dir)
+        mocker.patch("rebalancer.setup_signal_handlers")
+        mocker.patch("rebalancer.shutdown_requested", return_value=False)
+        mocker.patch("rebalancer.is_within_active_hours", return_value=True)
+        mocker.patch("rebalancer.check_in_use", return_value=False)
+        mocker.patch("rebalancer.transfer_unit", return_value=TransferResult(
+            "cleaned", copy_seconds=10.0, verify_seconds=5.0, delete_seconds=1.0))
+
+        db = PlanDB(db_path)
+        db.write_plan([
+            PlanEntry("/mnt/disk1/TV_Shows/A", 100_000, "/mnt/disk1", "/mnt/disk3", status="pending"),
+            PlanEntry("/mnt/disk1/TV_Shows/B", 100_000, "/mnt/disk1", "/mnt/disk3", status="pending"),
+        ])
+        # Seed throughput history so second transfer has ETA
+        db.record_copy_throughput(100_000, 10.0)
+        db.close()
+
+        mocker.patch("rebalancer.discover_disks")
+        mocker.patch("rebalancer.scan_movable_units")
+
+        result = main(["--yes"])
+        assert result == 0
+        output = capsys.readouterr().out
+        # Second transfer should have "Est." prefix
+        assert "Est." in output
+
+    def test_done_line_shows_wall_time(self, state_dir, db_path, mocker, capsys):
+        """Done line should show wall time instead of phase breakdown."""
+        mocker.patch("rebalancer.STATE_DIR", state_dir)
+        mocker.patch("rebalancer.setup_signal_handlers")
+        mocker.patch("rebalancer.shutdown_requested", return_value=False)
+        mocker.patch("rebalancer.is_within_active_hours", return_value=True)
+        mocker.patch("rebalancer.check_in_use", return_value=False)
+        mocker.patch("rebalancer.transfer_unit", return_value=TransferResult(
+            "cleaned", copy_seconds=60.0, verify_seconds=30.0, delete_seconds=2.0))
+
+        db = PlanDB(db_path)
+        db.write_plan([
+            PlanEntry("/mnt/disk1/TV_Shows/A", 100_000, "/mnt/disk1", "/mnt/disk3", status="pending"),
+        ])
+        db.close()
+
+        mocker.patch("rebalancer.discover_disks")
+        mocker.patch("rebalancer.scan_movable_units")
+
+        result = main(["--yes"])
+        assert result == 0
+        output = capsys.readouterr().out
+        assert "wall" in output
+        # Should NOT show old phase breakdown format in Done line
+        done_line = [l for l in output.split("\n") if "Done" in l][0]
+        assert "copy ~" not in done_line
+
+    def test_rates_passed_to_transfer_unit(self, state_dir, db_path, mocker, capsys):
+        """transfer_unit should receive copy_rate and verify_rate from throughput history."""
+        mocker.patch("rebalancer.STATE_DIR", state_dir)
+        mocker.patch("rebalancer.setup_signal_handlers")
+        mocker.patch("rebalancer.shutdown_requested", return_value=False)
+        mocker.patch("rebalancer.is_within_active_hours", return_value=True)
+        mocker.patch("rebalancer.check_in_use", return_value=False)
+
+        transfer_mock = mocker.patch("rebalancer.transfer_unit",
+                                     return_value=TransferResult("cleaned", copy_seconds=10.0))
+
+        db = PlanDB(db_path)
+        db.write_plan([
+            PlanEntry("/mnt/disk1/TV_Shows/A", 100_000, "/mnt/disk1", "/mnt/disk3", status="pending"),
+        ])
+        db.record_copy_throughput(100_000, 10.0)
+        db.record_verify_throughput(100_000, 5.0)
+        db.close()
+
+        mocker.patch("rebalancer.discover_disks")
+        mocker.patch("rebalancer.scan_movable_units")
+
+        result = main(["--yes"])
+        assert result == 0
+        # Check that transfer_unit was called with copy_rate and verify_rate
+        call_kwargs = transfer_mock.call_args.kwargs
+        assert "copy_rate" in call_kwargs
+        assert call_kwargs["copy_rate"] is not None
+        assert call_kwargs["copy_rate"] > 0
+        assert "verify_rate" in call_kwargs
+        assert call_kwargs["verify_rate"] is not None
+
     def test_limit_stops_after_n_transfers(self, state_dir, db_path, mocker, capsys):
         mocker.patch("rebalancer.STATE_DIR", state_dir)
         mocker.patch("rebalancer.setup_signal_handlers")
