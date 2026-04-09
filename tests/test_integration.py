@@ -313,3 +313,57 @@ class TestInputValidation:
         result = main(["--verify-timeout", "0"])
         assert result == 1
         assert "must be > 0" in capsys.readouterr().out
+
+
+class TestActiveDirCount:
+    def test_active_dir_count_set_during_limited_run(self, state_dir, db_path, mocker, capsys):
+        """When --limit is used, active_dir_count should be stored in meta."""
+        mocker.patch("rebalancer.STATE_DIR", state_dir)
+        mocker.patch("rebalancer.setup_signal_handlers")
+        mocker.patch("rebalancer.shutdown_requested", return_value=False)
+        mocker.patch("rebalancer.is_within_active_hours", return_value=True)
+        mocker.patch("rebalancer.check_in_use", return_value=False)
+        mocker.patch("rebalancer.transfer_unit", return_value=TransferResult("cleaned"))
+
+        db = PlanDB(db_path)
+        db.write_plan([
+            PlanEntry("/mnt/disk1/A", 100, "/mnt/disk1", "/mnt/disk3", status="pending"),
+            PlanEntry("/mnt/disk1/B", 200, "/mnt/disk1", "/mnt/disk3", status="pending"),
+        ])
+        db.close()
+
+        mocker.patch("rebalancer.discover_disks")
+        mocker.patch("rebalancer.scan_movable_units")
+
+        result = main(["--limit", "1", "--yes"])
+        assert result == 0
+
+        db = PlanDB(db_path)
+        assert db.get_meta("active_dir_count") is None  # cleared after run
+        db.close()
+
+    def test_active_dir_count_cleared_after_full_run(self, state_dir, db_path, mocker, capsys):
+        """After all transfers complete, active_dir_count should be cleared."""
+        mocker.patch("rebalancer.STATE_DIR", state_dir)
+        mocker.patch("rebalancer.setup_signal_handlers")
+        mocker.patch("rebalancer.shutdown_requested", return_value=False)
+        mocker.patch("rebalancer.is_within_active_hours", return_value=True)
+        mocker.patch("rebalancer.check_in_use", return_value=False)
+        mocker.patch("rebalancer.transfer_unit", return_value=TransferResult("cleaned"))
+
+        db = PlanDB(db_path)
+        db.write_plan([
+            PlanEntry("/mnt/disk1/A", 100, "/mnt/disk1", "/mnt/disk3", status="pending"),
+            PlanEntry("/mnt/disk1/B", 200, "/mnt/disk1", "/mnt/disk3", status="pending"),
+        ])
+        db.close()
+
+        mocker.patch("rebalancer.discover_disks")
+        mocker.patch("rebalancer.scan_movable_units")
+
+        result = main(["--yes"])
+        assert result == 0
+
+        db = PlanDB(db_path)
+        assert db.get_meta("active_dir_count") is None
+        db.close()
