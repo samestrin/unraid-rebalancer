@@ -5,9 +5,11 @@ from unittest.mock import MagicMock
 import pytest
 
 from rebalancer import (
+    DiskInfo,
     MovableUnit,
     find_duplicates,
     format_duplicates_report,
+    main,
 )
 
 
@@ -103,3 +105,48 @@ class TestFormatDuplicatesReport:
         report = format_duplicates_report(groups, {"/mnt/disk1": 90, "/mnt/disk2": 50})
         assert "1 duplicate" in report.lower()
         assert "reclaimable" in report.lower()
+
+
+class TestCheckDuplicatesCLI:
+    def _setup_mocks(self, mocker, state_dir, units=None):
+        mocker.patch("rebalancer.STATE_DIR", state_dir)
+        disks = [
+            DiskInfo("/mnt/disk1", 1_000_000, 900_000, 100_000, 90),
+            DiskInfo("/mnt/disk2", 1_000_000, 500_000, 500_000, 50),
+        ]
+        mocker.patch("rebalancer.discover_disks", return_value=disks)
+        if units is None:
+            units = [
+                MovableUnit("/mnt/disk1/TV/ShowA", "TV", "ShowA", 50_000, "/mnt/disk1"),
+                MovableUnit("/mnt/disk2/TV/ShowA", "TV", "ShowA", 50_000, "/mnt/disk2"),
+                MovableUnit("/mnt/disk1/TV/ShowB", "TV", "ShowB", 30_000, "/mnt/disk1"),
+            ]
+        mocker.patch("rebalancer.scan_movable_units", return_value=units)
+
+    def test_check_duplicates_prints_report(self, state_dir, mocker, capsys):
+        self._setup_mocks(mocker, state_dir)
+        result = main(["--check-duplicates"])
+        assert result == 0
+        output = capsys.readouterr().out
+        assert "TV/ShowA" in output
+        assert "DELETE" in output
+        assert "KEEP" in output
+
+    def test_check_duplicates_no_duplicates(self, state_dir, mocker, capsys):
+        unique_units = [
+            MovableUnit("/mnt/disk1/TV/ShowA", "TV", "ShowA", 50_000, "/mnt/disk1"),
+            MovableUnit("/mnt/disk2/TV/ShowB", "TV", "ShowB", 30_000, "/mnt/disk2"),
+        ]
+        self._setup_mocks(mocker, state_dir, units=unique_units)
+        result = main(["--check-duplicates"])
+        assert result == 0
+        output = capsys.readouterr().out
+        assert "No duplicates found." in output
+
+    def test_check_duplicates_no_lock_needed(self, state_dir, mocker, capsys):
+        """--check-duplicates should not acquire a lock."""
+        self._setup_mocks(mocker, state_dir)
+        lock_mock = mocker.patch("rebalancer.acquire_lock")
+        result = main(["--check-duplicates"])
+        assert result == 0
+        lock_mock.assert_not_called()
