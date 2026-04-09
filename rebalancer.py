@@ -2016,7 +2016,7 @@ def _run_with_db(args, db, excludes, drives_path, log_path) -> int:
                 if verify_rate and verify_rate > 0:
                     eta_parts.append(f"verify {format_eta(entry.size_bytes / verify_rate)}")
                 rate_str = f" @ {format_bytes(int(last_rate))}/s" if last_rate else ""
-                eta_str = f" \u2014 {', '.join(eta_parts)}{rate_str}"
+                eta_str = f" \u2014 Est. {', '.join(eta_parts)}{rate_str}"
             else:
                 eta_str = " \u2014 no ETA"
             if args.limit > 0:
@@ -2027,6 +2027,7 @@ def _run_with_db(args, db, excludes, drives_path, log_path) -> int:
                   f"({format_bytes(entry.size_bytes)}) "
                   f"{src_disk} -> {tgt_disk}{eta_str}")
 
+            t_wall = time_mod.monotonic()
             result = transfer_unit(
                 entry, remote=args.remote, min_free=args.min_free_space_bytes,
                 bwlimit=args.bwlimit, copy_timeout=args.copy_timeout,
@@ -2034,7 +2035,10 @@ def _run_with_db(args, db, excludes, drives_path, log_path) -> int:
                 lsof_timeout=args.lsof_timeout,
                 progress=args.progress,
                 phase_status=True,
+                copy_rate=copy_rate,
+                verify_rate=verify_rate,
             )
+            wall_secs = time_mod.monotonic() - t_wall
             db.update_status(entry.path, result.status)
             log_transfer(log_path, entry, result.status, detail=result.detail)
 
@@ -2053,14 +2057,8 @@ def _run_with_db(args, db, excludes, drives_path, log_path) -> int:
                     db.record_verify_throughput(entry.size_bytes, result.verify_seconds)
                 db.record_throughput(entry.size_bytes,
                                     (result.copy_seconds or 0) + (result.verify_seconds or 0) + (result.delete_seconds or 0))
-                # Done line with phase breakdown
-                phase_parts = []
-                if result.copy_seconds is not None:
-                    phase_parts.append(f"copy {format_eta(result.copy_seconds)}")
-                if result.verify_seconds is not None:
-                    phase_parts.append(f"verify {format_eta(result.verify_seconds)}")
-                phase_str = f" \u2014 {', '.join(phase_parts)}" if phase_parts else ""
-                print(f"    {_now_hms()} Done ({format_bytes(entry.size_bytes)}{phase_str})")
+                # Done line with wall time
+                print(f"    {_now_hms()} Done ({format_bytes(entry.size_bytes)} \u2014 wall {format_eta(wall_secs)})")
             else:
                 print(f"    {_now_hms()} {ANSI.red(f'FAILED: {result.status}')}")
                 if result.detail:
