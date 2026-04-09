@@ -347,6 +347,12 @@ class PlanDB:
                     timestamp       TEXT    NOT NULL
                 )
             """)
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS meta (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        """)
         self.conn.commit()
 
     def write_plan(self, entries: list[PlanEntry]) -> None:
@@ -433,6 +439,26 @@ class PlanDB:
             "SELECT COALESCE(SUM(size_bytes), 0) FROM plan WHERE status = 'pending'"
         ).fetchone()
         return row[0]
+
+    def set_meta(self, key: str, value: str) -> None:
+        """Set a metadata key-value pair (upsert)."""
+        with self.conn:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                (key, value),
+            )
+
+    def get_meta(self, key: str) -> str | None:
+        """Get a metadata value by key. Returns None if not found."""
+        row = self.conn.execute(
+            "SELECT value FROM meta WHERE key = ?", (key,)
+        ).fetchone()
+        return row[0] if row else None
+
+    def delete_meta(self, key: str) -> None:
+        """Delete a metadata key."""
+        with self.conn:
+            self.conn.execute("DELETE FROM meta WHERE key = ?", (key,))
 
     # --- Throughput tracking (private helpers + public per-table methods) ---
 
