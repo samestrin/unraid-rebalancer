@@ -779,6 +779,59 @@ class TestPhaseStatusOutput:
         assert "Est." in copy_line
         assert "Est." not in verify_line
 
+    def test_copy_actual_appended_same_line(self, mocker, capsys):
+        """After copy completes, actual timing appended with arrow on same line."""
+        mock_run, _ = TestTransferUnit()._make_mock_run()
+        mocker.patch("rebalancer.run_cmd", side_effect=mock_run)
+        entry = PlanEntry("/mnt/disk1/TV_Shows/Show", 1_000_000_000, "/mnt/disk1", "/mnt/disk10")
+        transfer_unit(entry, phase_status=True, copy_rate=50_000_000.0)
+        output = capsys.readouterr().out
+        copy_line = [l for l in output.split("\n") if "Copying" in l][0]
+        # Should have arrow separator with actual timing
+        assert "\u2192" in copy_line  # →
+        assert "Est." in copy_line
+
+    def test_verify_actual_appended_same_line(self, mocker, capsys):
+        """After verify completes, actual timing appended on same line."""
+        mock_run, _ = TestTransferUnit()._make_mock_run()
+        mocker.patch("rebalancer.run_cmd", side_effect=mock_run)
+        entry = PlanEntry("/mnt/disk1/TV_Shows/Show", 1_000_000_000, "/mnt/disk1", "/mnt/disk10")
+        transfer_unit(entry, phase_status=True, verify_rate=80_000_000.0)
+        output = capsys.readouterr().out
+        verify_line = [l for l in output.split("\n") if "Verifying" in l][0]
+        assert "\u2192" in verify_line
+
+    def test_actual_without_est_still_shows(self, mocker, capsys):
+        """Even without rate estimates, actual timing should appear after arrow."""
+        mock_run, _ = TestTransferUnit()._make_mock_run()
+        mocker.patch("rebalancer.run_cmd", side_effect=mock_run)
+        entry = PlanEntry("/mnt/disk1/TV_Shows/Show", 100_000, "/mnt/disk1", "/mnt/disk10")
+        transfer_unit(entry, phase_status=True)
+        output = capsys.readouterr().out
+        copy_line = [l for l in output.split("\n") if "Copying" in l][0]
+        assert "\u2192" in copy_line
+
+    def test_progress_mode_copy_actual_on_separate_line(self, mocker, capsys):
+        """With --progress, actual timing goes on a separate 'Copied.' line."""
+        mock_run, _ = TestTransferUnit()._make_mock_run()
+        mocker.patch("rebalancer.run_cmd", side_effect=mock_run)
+        entry = PlanEntry("/mnt/disk1/TV_Shows/Show", 1_000_000_000, "/mnt/disk1", "/mnt/disk10")
+        transfer_unit(entry, phase_status=True, progress=True, copy_rate=50_000_000.0)
+        output = capsys.readouterr().out
+        assert "Copied." in output
+        # Copying line should NOT have the arrow (progress breaks same-line)
+        copy_line = [l for l in output.split("\n") if "Copying" in l][0]
+        assert "\u2192" not in copy_line
+
+    def test_progress_mode_verify_actual_on_separate_line(self, mocker, capsys):
+        """With --progress, verify actual goes on 'Verified.' line."""
+        mock_run, _ = TestTransferUnit()._make_mock_run()
+        mocker.patch("rebalancer.run_cmd", side_effect=mock_run)
+        entry = PlanEntry("/mnt/disk1/TV_Shows/Show", 1_000_000_000, "/mnt/disk1", "/mnt/disk10")
+        transfer_unit(entry, phase_status=True, progress=True, verify_rate=80_000_000.0)
+        output = capsys.readouterr().out
+        assert "Verified." in output
+
     def test_progress_passthrough_passes_to_run_cmd(self, mocker):
         """With progress=True, run_cmd is called with passthrough=True for copy phase."""
         calls_with_kwargs = []
