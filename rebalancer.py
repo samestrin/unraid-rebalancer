@@ -1287,7 +1287,7 @@ def transfer_unit(
             copy_eta = ""
             if copy_rate and copy_rate > 0:
                 copy_eta = f"  Est. {format_eta(entry.size_bytes / copy_rate)} @ {format_bytes(int(copy_rate))}/s"
-            print(f"    {_now_hms()} Copying...{copy_eta}")
+            print(f"    {_now_hms()} Copying...{copy_eta}", end="\n" if progress else "", flush=True)
         t_copy = time_mod.monotonic()
         rsync_cmd = ["rsync", "-aHP"]
         if bwlimit:
@@ -1302,6 +1302,13 @@ def transfer_unit(
             passthrough=progress,
         )
         copy_secs = time_mod.monotonic() - t_copy
+        if phase_status:
+            actual_rate = entry.size_bytes / copy_secs if copy_secs > 0 else 0
+            actual_str = f"{format_eta(copy_secs)} @ {format_bytes(int(actual_rate))}/s" if actual_rate > 0 else format_eta(copy_secs)
+            if progress:
+                print(f"    {_now_hms()} Copied.  {actual_str}")
+            else:
+                print(f"  \u2192  {actual_str}")
         if copy_result.returncode != 0:
             return TransferResult("error_copy", _truncate_stderr(copy_result.stderr),
                                   copy_seconds=copy_secs)
@@ -1311,7 +1318,7 @@ def transfer_unit(
             verify_eta = ""
             if verify_rate and verify_rate > 0:
                 verify_eta = f"  Est. {format_eta(entry.size_bytes / verify_rate)} @ {format_bytes(int(verify_rate))}/s"
-            print(f"    {_now_hms()} Verifying...{verify_eta}")
+            print(f"    {_now_hms()} Verifying...{verify_eta}", end="\n" if progress else "", flush=True)
         t_verify = time_mod.monotonic()
         verify = run_cmd(
             ["rsync", "-anc", "--itemize-changes", f"{entry.path}/", f"{target_path}/"],
@@ -1319,6 +1326,13 @@ def transfer_unit(
             timeout=verify_timeout,
         )
         verify_secs = time_mod.monotonic() - t_verify
+        if phase_status:
+            v_actual_rate = entry.size_bytes / verify_secs if verify_secs > 0 else 0
+            v_actual_str = f"{format_eta(verify_secs)} @ {format_bytes(int(v_actual_rate))}/s" if v_actual_rate > 0 else format_eta(verify_secs)
+            if progress:
+                print(f"    {_now_hms()} Verified.  {v_actual_str}")
+            else:
+                print(f"  \u2192  {v_actual_str}")
         # With --itemize-changes, changed files produce lines like ">f..t......"
         # Filter out directory timestamp-only changes (.d..t......), which are
         # normal after copy. Do NOT filter other directory diffs (permissions,
