@@ -832,6 +832,17 @@ class TestPhaseStatusOutput:
         output = capsys.readouterr().out
         assert "Verified." in output
 
+    def test_copy_error_still_shows_actual(self, mocker, capsys):
+        """Even on error_copy, actual timing should be printed."""
+        mock_run, _ = TestTransferUnit()._make_mock_run(overrides={"rsync": 1})
+        mocker.patch("rebalancer.run_cmd", side_effect=mock_run)
+        entry = PlanEntry("/mnt/disk1/TV_Shows/Show", 100_000, "/mnt/disk1", "/mnt/disk10")
+        result = transfer_unit(entry, phase_status=True, copy_rate=50_000_000.0)
+        assert result == "error_copy"
+        output = capsys.readouterr().out
+        copy_line = [l for l in output.split("\n") if "Copying" in l][0]
+        assert "\u2192" in copy_line
+
     def test_progress_passthrough_passes_to_run_cmd(self, mocker):
         """With progress=True, run_cmd is called with passthrough=True for copy phase."""
         calls_with_kwargs = []
