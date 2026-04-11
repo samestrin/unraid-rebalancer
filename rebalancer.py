@@ -2112,7 +2112,8 @@ def _run_with_db(args, db, excludes, drives_path, log_path) -> int:
             print("No error entries to retry")
 
     # --- Scan / Plan ---
-    need_scan = not db.has_plan() or args.force_rescan
+    has_pending = bool(db.get_pending()) if db.has_plan() else False
+    need_scan = not db.has_plan() or not has_pending or args.force_rescan
     if args.force_rescan and db.has_plan() and not args.yes:
         pending = db.get_pending()
         if pending:
