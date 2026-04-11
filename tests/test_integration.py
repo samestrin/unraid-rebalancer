@@ -440,6 +440,31 @@ class TestFullPipeline:
         assert "[1/2]" in output
         assert "[2/2]" in output
 
+    def test_limit_exceeds_pending_shows_simple_counter(self, state_dir, db_path, mocker, capsys):
+        """When --limit is larger than pending count, show [1/N] not [1/limit (N)]."""
+        mocker.patch("rebalancer.STATE_DIR", state_dir)
+        mocker.patch("rebalancer.setup_signal_handlers")
+        mocker.patch("rebalancer.shutdown_requested", return_value=False)
+        mocker.patch("rebalancer.is_within_active_hours", return_value=True)
+        mocker.patch("rebalancer.check_in_use", return_value=False)
+        mocker.patch("rebalancer.transfer_unit", return_value=TransferResult("cleaned"))
+
+        db = PlanDB(db_path)
+        db.write_plan([
+            PlanEntry("/mnt/disk1/TV_Shows/A", 100, "/mnt/disk1", "/mnt/disk3", status="pending"),
+        ])
+        db.close()
+
+        mocker.patch("rebalancer.discover_disks")
+        mocker.patch("rebalancer.scan_movable_units")
+
+        result = main(["--limit", "10", "--yes"])
+        assert result == 0
+        output = capsys.readouterr().out
+        # Should show [1/1] not [1/10 (1)]
+        assert "[1/1]" in output
+        assert "[1/10" not in output
+
     def test_limit_counts_only_successful_transfers(self, state_dir, db_path, mocker, capsys):
         mocker.patch("rebalancer.STATE_DIR", state_dir)
         mocker.patch("rebalancer.setup_signal_handlers")
