@@ -16,6 +16,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import time as time_mod
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -1287,7 +1288,10 @@ def transfer_unit(
             copy_eta = ""
             if copy_rate and copy_rate > 0:
                 copy_eta = f"  Est. {format_eta(entry.size_bytes / copy_rate)} @ {format_bytes(int(copy_rate))}/s"
-            print(f"    {_now_hms()} Copying...{copy_eta}", end="\n" if progress else "", flush=True)
+            if progress:
+                print(f"    {_now_hms()} Copying...{copy_eta}")
+            else:
+                print(f"    {_now_hms()} Copying...{copy_eta} ", end="", flush=True)
         t_copy = time_mod.monotonic()
         rsync_cmd = ["rsync", "-aHP"]
         if bwlimit:
@@ -1295,12 +1299,16 @@ def transfer_unit(
         if progress:
             rsync_cmd.append("--info=progress2")
         rsync_cmd.extend([f"{entry.path}/", f"{target_path}/"])
-        copy_result = run_cmd(
-            rsync_cmd,
-            remote=remote,
-            timeout=copy_timeout,
-            passthrough=progress,
-        )
+        if phase_status and not progress:
+            with Spinner():
+                copy_result = run_cmd(
+                    rsync_cmd, remote=remote, timeout=copy_timeout,
+                )
+        else:
+            copy_result = run_cmd(
+                rsync_cmd, remote=remote, timeout=copy_timeout,
+                passthrough=progress,
+            )
         copy_secs = time_mod.monotonic() - t_copy
         if phase_status:
             actual_rate = entry.size_bytes / copy_secs if copy_secs > 0 else 0
@@ -1318,13 +1326,17 @@ def transfer_unit(
             verify_eta = ""
             if verify_rate and verify_rate > 0:
                 verify_eta = f"  Est. {format_eta(entry.size_bytes / verify_rate)} @ {format_bytes(int(verify_rate))}/s"
-            print(f"    {_now_hms()} Verifying...{verify_eta}", end="\n" if progress else "", flush=True)
+            if progress:
+                print(f"    {_now_hms()} Verifying...{verify_eta}")
+            else:
+                print(f"    {_now_hms()} Verifying...{verify_eta} ", end="", flush=True)
         t_verify = time_mod.monotonic()
-        verify = run_cmd(
-            ["rsync", "-anc", "--itemize-changes", f"{entry.path}/", f"{target_path}/"],
-            remote=remote,
-            timeout=verify_timeout,
-        )
+        verify_cmd = ["rsync", "-anc", "--itemize-changes", f"{entry.path}/", f"{target_path}/"]
+        if phase_status and not progress:
+            with Spinner():
+                verify = run_cmd(verify_cmd, remote=remote, timeout=verify_timeout)
+        else:
+            verify = run_cmd(verify_cmd, remote=remote, timeout=verify_timeout)
         verify_secs = time_mod.monotonic() - t_verify
         if phase_status:
             v_actual_rate = entry.size_bytes / verify_secs if verify_secs > 0 else 0
@@ -1465,6 +1477,37 @@ def is_within_active_hours(spec: str | None) -> bool:
 # =============================================================================
 # Terminal Display
 # =============================================================================
+
+class Spinner:
+    """Animated spinner for long-running phases. No-op when stdout is not a TTY."""
+
+    FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+    def __init__(self):
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def __enter__(self):
+        if sys.stdout.isatty():
+            self._thread = threading.Thread(target=self._spin, daemon=True)
+            self._thread.start()
+        return self
+
+    def __exit__(self, *args):
+        self._stop.set()
+        if self._thread:
+            self._thread.join()
+            # Erase spinner character
+            sys.stdout.write("\b \b")
+            sys.stdout.flush()
+
+    def _spin(self):
+        i = 0
+        while not self._stop.wait(0.25):
+            sys.stdout.write(f"\b{self.FRAMES[i % len(self.FRAMES)]}")
+            sys.stdout.flush()
+            i += 1
+
 
 class ANSI:
     """ANSI escape code constants. Disabled when NO_COLOR is set."""
