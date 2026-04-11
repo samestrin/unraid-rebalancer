@@ -8,6 +8,7 @@ import pytest
 
 from rebalancer import (
     PlanEntry,
+    Spinner,
     TransferResult,
     _truncate_stderr,
     check_in_use,
@@ -884,3 +885,27 @@ class TestPhaseStatusOutput:
         verify = [(c, k) for c, k in calls_with_kwargs if "--itemize-changes" in c]
         assert len(verify) >= 1
         assert verify[0][1].get("passthrough") is not True
+
+
+class TestSpinner:
+    def test_spinner_is_noop_when_not_tty(self, mocker):
+        """Spinner should do nothing when stdout is not a TTY."""
+        mocker.patch("sys.stdout.isatty", return_value=False)
+        with Spinner() as s:
+            assert s._thread is None
+
+    def test_spinner_context_manager_starts_and_stops(self, mocker):
+        """Spinner should start a thread on enter and stop it on exit."""
+        mocker.patch("sys.stdout.isatty", return_value=True)
+        mocker.patch("sys.stdout.write")
+        mocker.patch("sys.stdout.flush")
+        with Spinner() as s:
+            assert s._thread is not None
+            assert s._thread.is_alive()
+        # After exit, thread should be stopped
+        assert not s._thread.is_alive()
+
+    def test_spinner_has_braille_frames(self):
+        """Spinner frames should be braille characters."""
+        assert len(Spinner.FRAMES) > 0
+        assert "⠋" in Spinner.FRAMES
