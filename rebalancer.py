@@ -2196,10 +2196,10 @@ def _run_with_db(args, db, excludes, drives_path, log_path) -> int:
     completed = 0
 
     limit = args.limit if args.limit > 0 else total
-    if args.limit > 0:
+    if args.limit > 0 and limit < total:
         db.set_meta("session_transfer_limit", str(limit))
     print(f"\nStarting transfers: {total} pending" +
-          (f" (limit: {limit})" if args.limit > 0 else ""))
+          (f" (limit: {limit})" if args.limit > 0 and limit < total else ""))
     try:
         for entry in pending:
             if shutdown_requested():
@@ -2240,7 +2240,7 @@ def _run_with_db(args, db, excludes, drives_path, log_path) -> int:
                 eta_str = f" \u2014 Est. {', '.join(eta_parts)}{rate_str}"
             else:
                 eta_str = " \u2014 no ETA"
-            if args.limit > 0:
+            if args.limit > 0 and limit < total:
                 progress = f"[{completed + 1}/{limit} ({total})]"
             else:
                 progress = f"[{completed + 1}/{total}]"
