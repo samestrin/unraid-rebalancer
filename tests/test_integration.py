@@ -160,6 +160,24 @@ class TestFullPipeline:
         assert "Warning" not in output
         assert "Discovering" in output
 
+    def test_completed_plan_triggers_rescan(self, state_dir, db_path, mocker, capsys):
+        """When all plan entries are cleaned, a fresh scan should run."""
+        self._setup_mocks(mocker, state_dir)
+
+        # Pre-populate a fully completed plan
+        db = PlanDB(db_path)
+        db.write_plan([
+            PlanEntry("/mnt/disk1/old/A", 100, "/mnt/disk1", "/mnt/disk3", status="cleaned"),
+            PlanEntry("/mnt/disk1/old/B", 200, "/mnt/disk1", "/mnt/disk3", status="cleaned"),
+        ])
+        db.close()
+
+        result = main(["--yes", "--min-free-space", "0"])
+        assert result == 0
+        output = capsys.readouterr().out
+        # Should rescan, not just show "0 pending"
+        assert "Discovering" in output
+
     def test_all_balanced_exits_early(self, state_dir, mocker, capsys):
         mocker.patch("rebalancer.STATE_DIR", state_dir)
         mocker.patch("rebalancer.setup_signal_handlers")
