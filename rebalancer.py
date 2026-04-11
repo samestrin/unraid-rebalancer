@@ -1291,7 +1291,7 @@ def transfer_unit(
             if progress:
                 print(f"    {_now_hms()} Copying...{copy_eta}")
             else:
-                print(f"    {_now_hms()} Copying...{copy_eta} ", end="", flush=True)
+                print(f"    {_now_hms()} Copying...{copy_eta}  ", end="", flush=True)
         t_copy = time_mod.monotonic()
         rsync_cmd = ["rsync", "-aHP"]
         if bwlimit:
@@ -1329,7 +1329,7 @@ def transfer_unit(
             if progress:
                 print(f"    {_now_hms()} Verifying...{verify_eta}")
             else:
-                print(f"    {_now_hms()} Verifying...{verify_eta} ", end="", flush=True)
+                print(f"    {_now_hms()} Verifying...{verify_eta}  ", end="", flush=True)
         t_verify = time_mod.monotonic()
         verify_cmd = ["rsync", "-anc", "--itemize-changes", f"{entry.path}/", f"{target_path}/"]
         if phase_status and not progress:
@@ -1489,6 +1489,9 @@ class Spinner:
 
     def __enter__(self):
         if sys.stdout.isatty():
+            # Write first frame immediately to avoid cursor flash
+            sys.stdout.write(self.FRAMES[0])
+            sys.stdout.flush()
             self._thread = threading.Thread(target=self._spin, daemon=True)
             self._thread.start()
         return self
@@ -1502,8 +1505,8 @@ class Spinner:
             sys.stdout.flush()
 
     def _spin(self):
-        i = 0
-        while not self._stop.wait(0.25):
+        i = 1  # Start at 1 since frame 0 was written in __enter__
+        while not self._stop.wait(0.15):
             sys.stdout.write(f"\b{self.FRAMES[i % len(self.FRAMES)]}")
             sys.stdout.flush()
             i += 1
