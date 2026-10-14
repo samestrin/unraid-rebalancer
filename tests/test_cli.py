@@ -21,6 +21,7 @@ from rebalancer import (
     DEFAULT_MAX_USED,
     __version__,
     _check_required_tools,
+    _sync_supports_file_system,
 )
 
 
@@ -423,6 +424,38 @@ class TestCheckRequiredTools:
         result = main(["--dry-run"])
         assert result == 1
         assert "rsync" in capsys.readouterr().out
+
+    def test_sync_without_file_system_flag_blocks_main(self, state_dir, mocker, capsys):
+        mocker.patch("rebalancer.STATE_DIR", state_dir)
+        mocker.patch("rebalancer.setup_signal_handlers")
+        mocker.patch("rebalancer._check_required_tools", return_value=[])
+        mocker.patch("rebalancer._sync_supports_file_system", return_value=False)
+        result = main(["--dry-run"])
+        assert result == 1
+        assert "sync -f" in capsys.readouterr().out
+
+
+class TestSyncSupportsFileSystem:
+    def test_true_when_sync_f_succeeds(self, mocker):
+        mock_run = mocker.patch("rebalancer.run_cmd")
+        mock_run.return_value.returncode = 0
+        assert _sync_supports_file_system() is True
+        assert mock_run.call_args.args[0] == ["sync", "-f", "/"]
+
+    def test_false_when_sync_f_rejected(self, mocker):
+        mock_run = mocker.patch("rebalancer.run_cmd")
+        mock_run.return_value.returncode = 1
+        assert _sync_supports_file_system() is False
+
+    def test_false_on_error(self, mocker):
+        mocker.patch("rebalancer.run_cmd", side_effect=Exception("timeout"))
+        assert _sync_supports_file_system() is False
+
+    def test_passes_remote(self, mocker):
+        mock_run = mocker.patch("rebalancer.run_cmd")
+        mock_run.return_value.returncode = 0
+        _sync_supports_file_system(remote="root@unraid.lan")
+        assert mock_run.call_args.kwargs["remote"] == "root@unraid.lan"
 
 
 class TestStateDir:

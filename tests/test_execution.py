@@ -457,15 +457,23 @@ class TestSyncBeforeDelete:
         result, calls, _ = self._run(mocker, overrides={"sync -f": raise_timeout})
         assert result == "error_timeout"
         assert not any(c.startswith("rm -rf") for c in calls), "rm called despite sync timeout"
+        assert not any("--itemize-changes" in c for c in calls), "verify ran despite sync timeout"
 
-    def test_sync_uses_copy_timeout_and_remote(self, mocker):
+    def test_sync_uses_own_timeout_and_remote(self, mocker):
+        """Flush has a bounded timeout — not the 24h copy timeout."""
+        from rebalancer import SYNC_TIMEOUT
         _, _, calls_with_kwargs = self._run(
-            mocker, remote="root@unraid.lan", copy_timeout=3600,
+            mocker, remote="root@unraid.lan", copy_timeout=86400,
         )
         sync_calls = [k for c, k in calls_with_kwargs if c.startswith("sync -f")]
         assert len(sync_calls) == 1
-        assert sync_calls[0].get("timeout") == 3600
+        assert sync_calls[0].get("timeout") == SYNC_TIMEOUT
+        assert SYNC_TIMEOUT < 86400
         assert sync_calls[0].get("remote") == "root@unraid.lan"
+
+    def test_flush_phase_shown(self, mocker, capsys):
+        self._run(mocker, phase_status=True)
+        assert "Flushing to disk..." in capsys.readouterr().out
 
     def test_rsync_copy_failure_skips_sync(self, mocker):
         result, calls, _ = self._run(mocker, overrides={"-aHP": 1})

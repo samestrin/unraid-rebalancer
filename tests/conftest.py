@@ -27,6 +27,12 @@ def mock_lock(monkeypatch):
     monkeypatch.setattr("rebalancer.release_lock", lambda _: None)
 
 
+@pytest.fixture(autouse=True)
+def mock_sync_probe(monkeypatch):
+    """Auto-mock the sync -f capability probe so main() tests don't run sync."""
+    monkeypatch.setattr("rebalancer._sync_supports_file_system", lambda remote=None: True)
+
+
 @pytest.fixture
 def sample_disks():
     """Realistic 11-disk Unraid array with imbalanced usage."""
