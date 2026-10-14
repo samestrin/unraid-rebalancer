@@ -363,6 +363,13 @@ class TestCheckRequiredTools:
         assert "lsof" in missing
         assert len(missing) == 2
 
+    def test_missing_sync_detected(self, mocker):
+        """sync flushes the target before the source is deleted — it is required."""
+        def which_side_effect(tool):
+            return None if tool == "sync" else f"/usr/bin/{tool}"
+        mocker.patch("shutil.which", side_effect=which_side_effect)
+        assert _check_required_tools() == ["sync"]
+
     def test_remote_mode_batch_single_ssh_call(self, mocker):
         """Remote tool check should use a single SSH call, not N calls."""
         mock_run = mocker.patch("rebalancer.run_cmd")

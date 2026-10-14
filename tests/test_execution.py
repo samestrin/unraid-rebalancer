@@ -410,6 +410,69 @@ class TestTransferUnit:
         assert status == "skipped_full"
 
 
+# --- Flush target to disk before verify/delete ---
+
+class TestSyncBeforeDelete:
+    ENTRY = PlanEntry("/mnt/disk1/TV_Shows/Show", 100_000, "/mnt/disk1", "/mnt/disk10")
+    TARGET = "/mnt/disk10/TV_Shows/Show"
+
+    def _run(self, mocker, overrides=None, **kwargs):
+        mock_run, calls = TestTransferUnit()._make_mock_run(overrides=overrides)
+        calls_with_kwargs = []
+        def recording_run(cmd, **kw):
+            calls_with_kwargs.append((" ".join(cmd), kw))
+            return mock_run(cmd, **kw)
+        mocker.patch("rebalancer.run_cmd", side_effect=recording_run)
+        result = transfer_unit(self.ENTRY, **kwargs)
+        return result, calls, calls_with_kwargs
+
+    def test_sync_runs_on_target_path(self, mocker):
+        result, calls, _ = self._run(mocker)
+        assert result == "cleaned"
+        assert f"sync -f {self.TARGET}" in calls
+
+    def test_sync_after_copy_before_verify_and_delete(self, mocker):
+        _, calls, _ = self._run(mocker)
+        sync_idx = calls.index(f"sync -f {self.TARGET}")
+        copy_idx = next(i for i, c in enumerate(calls) if "-aHP" in c)
+        verify_idx = next(i for i, c in enumerate(calls) if "--itemize-changes" in c)
+        rm_idx = next(i for i, c in enumerate(calls) if c.startswith("rm -rf"))
+        assert copy_idx < sync_idx < verify_idx < rm_idx
+
+    def test_sync_failure_blocks_delete(self, mocker):
+        def set_sync_fail(result):
+            result.returncode = 1
+            result.stderr = "sync: error syncing: Input/output error"
+        result, calls, _ = self._run(mocker, overrides={"sync -f": set_sync_fail})
+        assert result == "error_copy"
+        assert result.detail.startswith("sync failed:")
+        assert "Input/output error" in result.detail
+        assert not any(c.startswith("rm -rf") for c in calls), "rm called despite sync failure"
+        assert not any("--itemize-changes" in c for c in calls), "verify ran despite sync failure"
+
+    def test_sync_timeout_blocks_delete(self, mocker):
+        import subprocess as sp
+        def raise_timeout(result):
+            raise sp.TimeoutExpired(cmd="sync", timeout=1)
+        result, calls, _ = self._run(mocker, overrides={"sync -f": raise_timeout})
+        assert result == "error_timeout"
+        assert not any(c.startswith("rm -rf") for c in calls), "rm called despite sync timeout"
+
+    def test_sync_uses_copy_timeout_and_remote(self, mocker):
+        _, _, calls_with_kwargs = self._run(
+            mocker, remote="root@unraid.lan", copy_timeout=3600,
+        )
+        sync_calls = [k for c, k in calls_with_kwargs if c.startswith("sync -f")]
+        assert len(sync_calls) == 1
+        assert sync_calls[0].get("timeout") == 3600
+        assert sync_calls[0].get("remote") == "root@unraid.lan"
+
+    def test_rsync_copy_failure_skips_sync(self, mocker):
+        result, calls, _ = self._run(mocker, overrides={"-aHP": 1})
+        assert result == "error_copy"
+        assert not any(c.startswith("sync -f") for c in calls)
+
+
 # --- PlanDB.update_status ---
 
 class TestUpdateStatus:
