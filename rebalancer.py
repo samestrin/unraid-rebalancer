@@ -39,6 +39,7 @@ CONFIG_FILE = "config.json"
 YEAR_PATTERN_SHARES = ["Movies"]
 LOCK_FILE = "rebalancer.lock"
 REQUIRED_TOOLS = ["rsync", "sync", "lsof", "du", "df", "rm", "mkdir", "ls", "test"]
+SYNC_TIMEOUT = 1800  # seconds; flushes are bounded by dirty page cache, not unit size
 STRATEGIES = ("fullest-first", "largest-first", "smallest-first")
 PLAN_DB_FILE = "plan.db"
 
@@ -656,6 +657,15 @@ def _check_required_tools(remote: str | None = None) -> list[str]:
             if shutil.which(tool) is None:
                 missing.append(tool)
     return missing
+
+
+def _sync_supports_file_system(remote: str | None = None) -> bool:
+    """Check that sync accepts -f (coreutils 8.24+), needed to flush the target disk."""
+    try:
+        result = run_cmd(["sync", "-f", "/"], remote=remote, timeout=60)
+        return result.returncode == 0
+    except Exception:
+        return False
 
 
 # =============================================================================
@@ -1324,7 +1334,9 @@ def transfer_unit(
         # Phase 1b: flush the target filesystem so the copy is durable on disk
         # before verify and before the source is deleted. Without this, a crash
         # or power loss after delete can lose data still sitting in page cache.
-        sync_result = run_cmd(["sync", "-f", target_path], remote=remote, timeout=copy_timeout)
+        if phase_status:
+            print(f"    {_now_hms()} Flushing to disk...")
+        sync_result = run_cmd(["sync", "-f", target_path], remote=remote, timeout=SYNC_TIMEOUT)
         if sync_result.returncode != 0:
             return TransferResult("error_copy",
                                   _truncate_stderr(f"sync failed: {sync_result.stderr}"),
@@ -2087,6 +2099,9 @@ def _main_locked(args, config, state_dir, db_path, drives_path, log_path) -> int
     missing = _check_required_tools(remote=args.remote)
     if missing:
         print(f"Error: required tools not found: {', '.join(missing)}")
+        return 1
+    if not _sync_supports_file_system(remote=args.remote):
+        print("Error: sync does not support -f (sync -f requires coreutils 8.24+)")
         return 1
 
     # --- Resolve duplicates mode (before PlanDB, independent workflow) ---

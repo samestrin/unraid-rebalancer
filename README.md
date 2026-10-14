@@ -29,7 +29,7 @@ Rebalance data across Unraid disk array drives. Moves folders from overloaded di
 ## Requirements
 
 - Python 3.10+ (stdlib only, no pip dependencies). Install via [NerdTools Community Applications plugin](https://forums.unraid.net/topic/35866-unraid-6-nerdtools/).
-- rsync 3.1+, lsof, and coreutils `sync` with `-f` on the target machine (included with Unraid)
+- rsync 3.1+, lsof, and coreutils 8.24+ `sync` (supports `-f`; checked at startup) on the target machine (included with Unraid)
 
 ## Installation
 
