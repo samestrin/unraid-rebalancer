@@ -38,7 +38,7 @@ TRANSFERS_LOG = "transfers.log"
 CONFIG_FILE = "config.json"
 YEAR_PATTERN_SHARES = ["Movies"]
 LOCK_FILE = "rebalancer.lock"
-REQUIRED_TOOLS = ["rsync", "lsof", "du", "df", "rm", "mkdir", "ls", "test"]
+REQUIRED_TOOLS = ["rsync", "sync", "lsof", "du", "df", "rm", "mkdir", "ls", "test"]
 STRATEGIES = ("fullest-first", "largest-first", "smallest-first")
 PLAN_DB_FILE = "plan.db"
 
@@ -1223,7 +1223,7 @@ def transfer_unit(
     - 'cleaned': success
     - 'skipped_full': target disk has insufficient free space
     - 'error_path': invalid/unsafe path, symlink, or mkdir failed
-    - 'error_copy': rsync copy failed (detail has stderr)
+    - 'error_copy': rsync copy or sync flush failed (detail has stderr)
     - 'error_verify': checksum mismatch (detail has stderr; source NOT deleted)
     - 'error_delete': rm -rf failed (detail has stderr; data on both disks)
     - 'skipped_in_use': files in use before delete (data on both disks, safe to retry)
@@ -1319,6 +1319,15 @@ def transfer_unit(
                 print(f"  \u2192  {actual_str}")
         if copy_result.returncode != 0:
             return TransferResult("error_copy", _truncate_stderr(copy_result.stderr),
+                                  copy_seconds=copy_secs)
+
+        # Phase 1b: flush the target filesystem so the copy is durable on disk
+        # before verify and before the source is deleted. Without this, a crash
+        # or power loss after delete can lose data still sitting in page cache.
+        sync_result = run_cmd(["sync", "-f", target_path], remote=remote, timeout=copy_timeout)
+        if sync_result.returncode != 0:
+            return TransferResult("error_copy",
+                                  _truncate_stderr(f"sync failed: {sync_result.stderr}"),
                                   copy_seconds=copy_secs)
 
         # Phase 2: checksum verification using --itemize-changes for reliable parsing
