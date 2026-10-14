@@ -14,7 +14,7 @@ Rebalance data across Unraid disk array drives. Moves folders from overloaded di
 ## Features
 
 - **Hybrid rebalancing**: drains disks above threshold (only as much as needed), fills the lowest-usage target first. When all disks exceed the threshold, still makes progress by moving from the fullest to the least-full.
-- **Three-phase transfer**: rsync copy (`-aHP` with partial resume), checksum verify (`--itemize-changes`, directory-only attribute changes filtered out), delete source. Source is never deleted unless verification confirms an exact match. Crash-safe: resumes partial transfers automatically.
+- **Three-phase transfer**: rsync copy (`-aHP` with partial resume), `sync -f` flush of the target filesystem, checksum verify (`--itemize-changes`, directory-only attribute changes filtered out), delete source. Source is never deleted unless verification confirms an exact match. Crash-safe: resumes partial transfers automatically.
 - **Configurable**: `/boot/config/plugins/rebalancer/config.json` sets persistent defaults (excludes, thresholds, schedule). CLI flags override config values. State directory overridable via `--state-dir` or `UNRAID_REBALANCER_STATE_DIR` env var.
 - **SQLite state**: plan stored in WAL-mode SQLite for crash safety, O(1) status updates, and concurrent `--status` reads during execution.
 - **Pause/resume**: Ctrl+C or `kill <pid>` (SIGTERM) gracefully finishes current transfer. Double Ctrl+C within 3 seconds force exits. Interrupted transfers recover automatically on restart.
@@ -29,7 +29,7 @@ Rebalance data across Unraid disk array drives. Moves folders from overloaded di
 ## Requirements
 
 - Python 3.10+ (stdlib only, no pip dependencies). Install via [NerdTools Community Applications plugin](https://forums.unraid.net/topic/35866-unraid-6-nerdtools/).
-- rsync 3.1+ and lsof on the target machine (included with Unraid)
+- rsync 3.1+, lsof, and coreutils 8.24+ `sync` (supports `-f`; checked at startup) on the target machine (included with Unraid)
 
 ## Installation
 
@@ -212,7 +212,7 @@ Default exclusions are defined in `config.json` (initially `["Backups", "Develop
 | `skipped_full` | Target disk has insufficient free space | Rerun later or use `--min-free-space 0` |
 | `skipped_in_use` | Files in use before delete (data safe on both disks) | Rerun later; use `--retry-errors` to re-attempt |
 | `error_path` | Invalid/unsafe path, symlink source, or mkdir failed | Check plan for bad entries |
-| `error_copy` | rsync copy failed | Check `transfers.log` for stderr detail; check disk space, permissions, connectivity |
+| `error_copy` | rsync copy or `sync` flush failed | Check `transfers.log` for stderr detail; check disk space, permissions, connectivity |
 | `error_verify` | Checksum mismatch after copy | Data exists on both disks; check `transfers.log` for stderr detail |
 | `error_delete` | Source deletion failed | Data on both disks; check `transfers.log` for stderr detail |
 | `error_timeout` | Command timed out | Check connectivity, disk health; see `--copy-timeout` / `--verify-timeout` |
